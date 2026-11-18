@@ -5,6 +5,8 @@ import { serializedPlayer } from './player';
 import { Game } from './game';
 import {
   ACTION_TIMEOUT,
+  ACTIVITIES,
+  ACTIVITY_COOLDOWN,
   AWKWARD_CONVERSATION_TIMEOUT,
   CONVERSATION_COOLDOWN,
   CONVERSATION_DISTANCE,
@@ -22,6 +24,12 @@ import { distance } from '../util/geometry';
 import { internal } from '../_generated/api';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
+import { WorldMap } from './worldMap';
+
+// Simple wander/activity must not wait on the action isolate pool. Self-hosted
+// Convex has a handful of workers; LLM message/remember actions starve
+// `agentDoSomething`, so NPCs finish a path and freeze until ACTION_TIMEOUT.
+const DO_SOMETHING_TIMEOUT = 15_000;
 
 export class Agent {
   id: GameId<'agents'>;
@@ -55,12 +63,14 @@ export class Agent {
       throw new Error(`Invalid player ID ${this.playerId}`);
     }
     if (this.inProgressOperation) {
-      if (now < this.inProgressOperation.started + ACTION_TIMEOUT) {
-        // Wait on the operation to finish.
-        return;
+      const timeout =
+        this.inProgressOperation.name === 'agentDoSomething'
+          ? DO_SOMETHING_TIMEOUT
+          : ACTION_TIMEOUT;
+      if (now >= this.inProgressOperation.started + timeout) {
+        console.log(`Timing out ${JSON.stringify(this.inProgressOperation)}`);
+        delete this.inProgressOperation;
       }
-      console.log(`Timing out ${JSON.stringify(this.inProgressOperation)}`);
-      delete this.inProgressOperation;
     }
     const conversation = game.world.playerConversation(player);
     const member = conversation?.participants.get(player.id);
@@ -71,16 +81,46 @@ export class Agent {
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
     }
-    // If we're not in a conversation, do something.
-    // If we aren't doing an activity or moving, do something.
-    // If we have been wandering but haven't thought about something to do for
-    // a while, do something.
-    if (!conversation && !doingActivity && (!player.pathfinding || !recentlyAttemptedInvite)) {
+    // Idle wander/activity must run even while remember/message/doSomething
+    // actions are queued — otherwise NPCs freeze for the whole LLM wait, and
+    // those actions also starve the self-hosted isolate pool / game loop.
+    if (!conversation && !doingActivity && !player.pathfinding) {
+      const justLeftConversation =
+        this.lastConversation !== undefined &&
+        now < this.lastConversation + CONVERSATION_COOLDOWN;
+      const recentActivity =
+        player.activity !== undefined && now < player.activity.until + ACTIVITY_COOLDOWN;
+      // Prefer walking: only occasionally stand still for a short activity.
+      if (recentActivity || justLeftConversation || Math.random() < 0.75) {
+        movePlayer(game, now, player, wanderDestination(game.worldMap));
+      } else {
+        const activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+        player.activity = {
+          description: activity.description,
+          emoji: activity.emoji,
+          until: now + activity.duration,
+        };
+      }
+      return;
+    }
+    // Conversation / invite flows still wait on their async operation.
+    if (this.inProgressOperation) {
+      return;
+    }
+    // Already walking and haven't tried inviting recently — ask the async op
+    // to pick a conversation candidate (needs a DB query).
+    if (!conversation && !doingActivity && player.pathfinding && !recentlyAttemptedInvite) {
+      // Mark the attempt immediately so we don't re-fire every tick when the
+      // previous doSomething finishes without an invitee (that spam was
+      // flooding the isolate pool and stalling movement simulation).
+      this.lastInviteAttempt = now;
       this.startOperation(game, now, 'agentDoSomething', {
         worldId: game.worldId,
         player: player.serialize(),
         otherFreePlayers: [...game.world.players.values()]
           .filter((p) => p.id !== player.id)
+          // Humans chat out-of-band; never invite them into world conversations.
+          .filter((p) => !p.human)
           .filter(
             (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
           )
@@ -109,18 +149,18 @@ export class Agent {
       )!;
       const otherPlayer = game.world.players.get(otherPlayerId)!;
       if (member.status.kind === 'invited') {
-        // Accept a conversation with another agent with some probability and with
-        // a human unconditionally.
-        if (otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY) {
+        // Reject invites from humans (they chat out-of-band). Otherwise accept
+        // another agent with some probability.
+        if (otherPlayer.human || Math.random() >= INVITE_ACCEPT_PROBABILITY) {
+          console.log(`Agent ${player.id} rejecting invite from ${otherPlayer.id}`);
+          conversation.rejectInvite(game, now, player);
+        } else {
           console.log(`Agent ${player.id} accepting invite from ${otherPlayer.id}`);
           conversation.acceptInvite(game, player);
           // Stop moving so we can start walking towards the other player.
           if (player.pathfinding) {
             delete player.pathfinding;
           }
-        } else {
-          console.log(`Agent ${player.id} rejecting invite from ${otherPlayer.id}`);
-          conversation.rejectInvite(game, now, player);
         }
         return;
       }
@@ -247,10 +287,11 @@ export class Agent {
       );
     }
     const operationId = game.allocId('operations');
-    console.log(`Agent ${this.id} starting operation ${name} (${operationId})`);
-    game.scheduleOperation(name, { operationId, ...args } as any);
+    const operationName = name as string;
+    console.log(`Agent ${this.id} starting operation ${operationName} (${operationId})`);
+    game.scheduleOperation(operationName, { operationId, ...args } as any);
     this.inProgressOperation = {
-      name,
+      name: operationName,
       operationId,
       started: now,
     };
@@ -285,6 +326,13 @@ export const serializedAgent = {
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
 type AgentOperations = typeof internal.aiTown.agentOperations;
+
+function wanderDestination(worldMap: WorldMap) {
+  return {
+    x: 1 + Math.floor(Math.random() * (worldMap.width - 2)),
+    y: 1 + Math.floor(Math.random() * (worldMap.height - 2)),
+  };
+}
 
 export async function runAgentOperation(ctx: MutationCtx, operation: string, args: any) {
   let reference;

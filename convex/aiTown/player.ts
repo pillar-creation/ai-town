@@ -272,8 +272,14 @@ export const playerInputs = {
       tokenIdentifier: v.optional(v.string()),
     },
     handler: (game, now, args) => {
-      Player.join(game, now, args.name, args.character, args.description, args.tokenIdentifier);
-      return null;
+      return Player.join(
+        game,
+        now,
+        args.name,
+        args.character,
+        args.description,
+        args.tokenIdentifier,
+      );
     },
   }),
   leave: inputHandler({

@@ -2,6 +2,7 @@ import { v } from 'convex/values';
 import { mutation, query } from './_generated/server';
 import { insertInput } from './aiTown/insertInput';
 import { conversationId, playerId } from './aiTown/ids';
+import { DEFAULT_NAME, HUMAN_CHAT_AUTHOR_ID } from './constants';
 
 export const listMessages = query({
   args: {
@@ -15,6 +16,10 @@ export const listMessages = query({
       .collect();
     const out = [];
     for (const message of messages) {
+      if (message.author === HUMAN_CHAT_AUTHOR_ID || message.author.startsWith('hc:')) {
+        out.push({ ...message, authorName: DEFAULT_NAME });
+        continue;
+      }
       const playerDescription = await ctx.db
         .query('playerDescriptions')
         .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', message.author))

@@ -30,8 +30,9 @@ export const Player = ({
   historicalTime?: number;
 }) => {
   const playerCharacter = game.playerDescriptions.get(player.id)?.character;
+  // Description can lag a tick behind a newly joined player; don't crash the Stage.
   if (!playerCharacter) {
-    throw new Error(`Player ${player.id} has no character`);
+    return null;
   }
   const character = characters.find((c) => c.name === playerCharacter);
 

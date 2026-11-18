@@ -123,14 +123,15 @@ export class Conversation {
     if (player.id === invitee.id) {
       throw new Error(`Can't invite yourself to a conversation`);
     }
-    // Ensure the players still exist.
+    // Ensure the players aren't already in a conversation. Human↔NPC chat lives in
+    // humanConversations and never goes through this path.
     if ([...game.world.conversations.values()].find((c) => c.participants.has(player.id))) {
       const reason = `Player ${player.id} is already in a conversation`;
       console.log(reason);
       return { error: reason };
     }
     if ([...game.world.conversations.values()].find((c) => c.participants.has(invitee.id))) {
-      const reason = `Player ${player.id} is already in a conversation`;
+      const reason = `Player ${invitee.id} is already in a conversation`;
       console.log(reason);
       return { error: reason };
     }

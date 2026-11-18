@@ -56,6 +56,10 @@ export const agentInputs = {
       }
       delete agent.inProgressOperation;
       const player = game.world.players.get(agent.playerId)!;
+      // Already in a world conversation — don't override with wander/activity/invite.
+      if (game.world.playerConversation(player)) {
+        return null;
+      }
       if (args.invitee) {
         const inviteeId = parseGameId('players', args.invitee);
         const invitee = game.world.players.get(inviteeId);
@@ -94,9 +98,6 @@ export const agentInputs = {
       }
       const conversationId = parseGameId('conversations', args.conversationId);
       const conversation = game.world.conversations.get(conversationId);
-      if (!conversation) {
-        throw new Error(`Couldn't find conversation: ${conversationId}`);
-      }
       if (
         !agent.inProgressOperation ||
         agent.inProgressOperation.operationId !== args.operationId
@@ -105,6 +106,11 @@ export const agentInputs = {
         return null;
       }
       delete agent.inProgressOperation;
+      // Conversation may have ended while the LLM reply was still in flight.
+      if (!conversation) {
+        console.debug(`Conversation ${conversationId} already ended; dropping message finish`);
+        return null;
+      }
       conversationInputs.finishSendingMessage.handler(game, now, {
         playerId: agent.playerId,
         conversationId: args.conversationId,

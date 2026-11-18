@@ -5,11 +5,15 @@ import './index.css';
 import 'uplot/dist/uPlot.min.css';
 import 'react-toastify/dist/ReactToastify.css';
 import ConvexClientProvider from './components/ConvexClientProvider.tsx';
+import { GameErrorBoundary } from './components/GameErrorBoundary.tsx';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConvexClientProvider>
-      <Home />
+      {/* Must wrap Home: usePrefetchWorldData / useQuery throw on Convex timeouts during render. */}
+      <GameErrorBoundary>
+        <Home />
+      </GameErrorBoundary>
     </ConvexClientProvider>
   </React.StrictMode>,
 );

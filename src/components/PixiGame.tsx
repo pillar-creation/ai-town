@@ -6,14 +6,14 @@ import { PixiStaticMap } from './PixiStaticMap.tsx';
 import PixiViewport from './PixiViewport.tsx';
 import { Viewport } from 'pixi-viewport';
 import { Id } from '../../convex/_generated/dataModel';
-import { useQuery } from 'convex/react';
-import { api } from '../../convex/_generated/api.js';
 import { useSendInput } from '../hooks/sendInput.ts';
 import { toastOnError } from '../toasts.ts';
 import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
+import { endEnterTiming, markEnterTiming } from '../utils/enterTiming.ts';
+import { DEFAULT_NAME } from '../../convex/constants.ts';
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -28,9 +28,10 @@ export const PixiGame = (props: {
   const pixiApp = useApp();
   const viewportRef = useRef<Viewport | undefined>();
 
-  const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
+  // Auth is disabled; userStatus is a constant. Avoid a Convex round-trip that can
+  // time out under backend load and crash React (useQuery throws on server errors).
   const humanPlayerId = [...props.game.world.players.values()].find(
-    (p) => p.human === humanTokenIdentifier,
+    (p) => p.human === DEFAULT_NAME,
   )?.id;
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
@@ -92,6 +93,20 @@ export const PixiGame = (props: {
       scale: 1.5,
     });
   }, [humanPlayerId]);
+
+  useEffect(() => {
+    markEnterTiming('PixiGame mounted', {
+      width: props.width,
+      height: props.height,
+      players: players.length,
+    });
+    // First paint after React commit + Pixi create; rAF ≈ when canvas may become visible.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        endEnterTiming('first paint rAF (map/characters may still load textures)');
+      });
+    });
+  }, []);
 
   return (
     <PixiViewport

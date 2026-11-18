@@ -28,6 +28,9 @@ export abstract class AbstractGame {
 
     const lastStepTs = this.engine.currentTime;
     const startTs = lastStepTs ? lastStepTs + this.tickDuration : now;
+    // Cap how much sim time one persisted step covers. Dumping multi-second
+    // catch-up histories makes the client hard-jump (stuttery movement).
+    const horizon = Math.min(now, (lastStepTs ?? now) + this.stepDuration);
     let currentTs = startTs;
     let inputIndex = 0;
     let numTicks = 0;
@@ -68,7 +71,7 @@ export abstract class AbstractGame {
       this.tick(currentTs);
 
       const candidateTs = currentTs + this.tickDuration;
-      if (now < candidateTs) {
+      if (horizon < candidateTs) {
         break;
       }
       currentTs = candidateTs;

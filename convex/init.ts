@@ -5,7 +5,7 @@ import { Descriptions } from '../data/characters';
 import * as map from '../data/gentle';
 import { insertInput } from './aiTown/insertInput';
 import { Id } from './_generated/dataModel';
-import { createEngine } from './aiTown/main';
+import { createEngine, startEngine } from './aiTown/main';
 import { ENGINE_ACTION_DURATION } from './constants';
 import { detectMismatchedLLMProvider } from './util/llm';
 
@@ -16,11 +16,13 @@ const init = mutation({
   handler: async (ctx, args) => {
     detectMismatchedLLMProvider();
     const { worldStatus, engine } = await getOrCreateDefaultWorld(ctx);
-    if (worldStatus.status !== 'running') {
-      console.warn(
-        `Engine ${engine._id} is not active! Run "npx convex run testing:resume" to restart it.`,
-      );
-      return;
+    if (worldStatus.status !== 'running' || !engine.running) {
+      if (worldStatus.status !== 'running') {
+        await ctx.db.patch(worldStatus._id, { status: 'running' });
+      }
+      if (!engine.running) {
+        await startEngine(ctx, worldStatus.worldId);
+      }
     }
     const shouldCreate = await shouldCreateAgents(
       ctx.db,

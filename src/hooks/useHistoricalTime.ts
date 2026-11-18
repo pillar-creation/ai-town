@@ -44,8 +44,17 @@ export class HistoricalTimeManager {
       if (latest.endTs === engineStatus.currentTime) {
         return;
       }
+      // Engine restart / reconnect / clock rewind can send an older currentTime.
+      // Throwing here runs during React render and blanks the whole app.
       if (latest.endTs > engineStatus.currentTime) {
-        throw new Error(`Received out-of-order engine status`);
+        console.warn('Received out-of-order engine status; resetting time buffer', {
+          previousEndTs: latest.endTs,
+          currentTime: engineStatus.currentTime,
+        });
+        this.intervals = [];
+        this.totalDuration = 0;
+        this.prevClientTs = undefined;
+        this.prevServerTs = undefined;
       }
     }
     const newInterval = {
@@ -68,21 +77,22 @@ export class HistoricalTimeManager {
     const prevServerTs = this.prevServerTs ?? this.intervals[0].startTs;
     const lastServerTs = this.intervals[this.intervals.length - 1].endTs;
 
-    // Simple rate adjustment: run time at 1.2 speed if we're more than 1s behind and
-    // 0.8 speed if we only have 100ms of buffer left. A more sophisticated approach
-    // would be to continuously adjust the rate based on the size of the buffer.
+    // Continuously adjust playback rate from buffer size. Prefer speeding up
+    // over hard-jumping — large jumps look like characters teleporting.
     const bufferDuration = lastServerTs - prevServerTs;
     let rate = 1;
     if (bufferDuration < SOFT_MIN_SERVER_BUFFER_AGE) {
-      rate = 0.8;
+      rate = 0.75;
     } else if (bufferDuration > SOFT_MAX_SERVER_BUFFER_AGE) {
-      rate = 1.2;
+      // Ramp up gradually so multi-second catch-up still looks continuous.
+      rate = Math.min(2.5, 1 + (bufferDuration - SOFT_MAX_SERVER_BUFFER_AGE) / 1000);
     }
-    let serverTs = Math.max(
-      prevServerTs + (clientNow - prevClientTs) * rate,
-      // Jump forward if we're too far behind.
-      lastServerTs - MAX_SERVER_BUFFER_AGE,
-    );
+    let serverTs = prevServerTs + (clientNow - prevClientTs) * rate;
+    // Only hard-clamp when the buffer is pathologically large (e.g. after a
+    // long tab background). Normal catch-up should drain via rate > 1.
+    if (bufferDuration > MAX_SERVER_BUFFER_AGE) {
+      serverTs = Math.max(serverTs, lastServerTs - MAX_SERVER_BUFFER_AGE);
+    }
 
     let chosen = null;
     for (let i = 0; i < this.intervals.length; i++) {
@@ -138,6 +148,6 @@ export class HistoricalTimeManager {
   }
 }
 
-const MAX_SERVER_BUFFER_AGE = 1500;
-const SOFT_MAX_SERVER_BUFFER_AGE = 1250;
+const MAX_SERVER_BUFFER_AGE = 4000;
+const SOFT_MAX_SERVER_BUFFER_AGE = 1000;
 const SOFT_MIN_SERVER_BUFFER_AGE = 250;

@@ -6,6 +6,7 @@ import * as gentlesparkle from '../../data/animations/gentlesparkle.json';
 import * as gentlewaterfall from '../../data/animations/gentlewaterfall.json';
 import * as gentlesplash from '../../data/animations/gentlesplash.json';
 import * as windmill from '../../data/animations/windmill.json';
+import { markEnterTiming } from '../utils/enterTiming.ts';
 
 const animations = {
   'campfire.json': { spritesheet: campfire, url: '/ai-town/assets/spritesheets/campfire.png' },
@@ -24,6 +25,12 @@ const animations = {
 
 export const PixiStaticMap = PixiComponent('StaticMap', {
   create: (props: { map: WorldMap; [k: string]: any }) => {
+    const createStarted = performance.now();
+    markEnterTiming('PixiStaticMap create start', {
+      tileSetUrl: props.map.tileSetUrl,
+      mapSize: `${props.map.width}x${props.map.height}`,
+      animatedSprites: props.map.animatedSprites.length,
+    });
     const map = props.map;
     const numxtiles = Math.floor(map.tileSetDimX / map.tileDim);
     const numytiles = Math.floor(map.tileSetDimY / map.tileDim);
@@ -47,6 +54,7 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
     const allLayers = [...map.bgTiles, ...map.objectTiles];
 
     // blit bg & object layers of map onto canvas
+    let spriteCount = 0;
     for (let i = 0; i < screenxtiles * screenytiles; i++) {
       const x = i % screenxtiles;
       const y = Math.floor(i / screenxtiles);
@@ -62,8 +70,14 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
         ctile.x = xPx;
         ctile.y = yPx;
         container.addChild(ctile);
+        spriteCount += 1;
       }
     }
+    markEnterTiming('PixiStaticMap tiles built', {
+      tileSprites: spriteCount,
+      layers: allLayers.length,
+      buildMs: Math.round(performance.now() - createStarted),
+    });
 
     // TODO: Add layers.
     const spritesBySheet = new Map<string, AnimatedSprite[]>();
@@ -116,6 +130,29 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
       screenxtiles * map.tileDim,
       screenytiles * map.tileDim,
     );
+
+    markEnterTiming('PixiStaticMap create return', {
+      totalMs: Math.round(performance.now() - createStarted),
+      children: container.children.length,
+    });
+
+    // Texture may still be decoding; first paint can lag until BaseTexture loads.
+    if (!bt.valid) {
+      const textureWaitStarted = performance.now();
+      bt.once('loaded', () => {
+        markEnterTiming('PixiStaticMap tileSet texture loaded', {
+          waitMs: Math.round(performance.now() - textureWaitStarted),
+          tileSetUrl: map.tileSetUrl,
+        });
+      });
+      bt.once('error', () => {
+        markEnterTiming('PixiStaticMap tileSet texture ERROR', {
+          tileSetUrl: map.tileSetUrl,
+        });
+      });
+    } else {
+      markEnterTiming('PixiStaticMap tileSet texture already valid');
+    }
 
     return container;
   },

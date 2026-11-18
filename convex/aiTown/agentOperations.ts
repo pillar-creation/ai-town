@@ -14,6 +14,7 @@ import { ACTIVITIES, ACTIVITY_COOLDOWN, CONVERSATION_COOLDOWN } from '../constan
 import { api, internal } from '../_generated/api';
 import { sleep } from '../util/sleep';
 import { serializedPlayer } from './player';
+import { logTiming } from '../util/timing';
 
 export const agentRememberConversation = internalAction({
   args: {
@@ -24,6 +25,7 @@ export const agentRememberConversation = internalAction({
     operationId: v.string(),
   },
   handler: async (ctx, args) => {
+    const started = Date.now();
     await rememberConversation(
       ctx,
       args.worldId,
@@ -31,7 +33,9 @@ export const agentRememberConversation = internalAction({
       args.playerId as GameId<'players'>,
       args.conversationId as GameId<'conversations'>,
     );
+    const rememberMs = Date.now() - started;
     await sleep(Math.random() * 1000);
+    const sendStarted = Date.now();
     await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: args.worldId,
       name: 'finishRememberConversation',
@@ -39,6 +43,11 @@ export const agentRememberConversation = internalAction({
         agentId: args.agentId,
         operationId: args.operationId,
       },
+    });
+    logTiming('agentRememberConversation', started, {
+      rememberMs,
+      sendMs: Date.now() - sendStarted,
+      agentId: args.agentId,
     });
   },
 });
@@ -55,6 +64,7 @@ export const agentGenerateMessage = internalAction({
     messageUuid: v.string(),
   },
   handler: async (ctx, args) => {
+    const totalStart = Date.now();
     let completionFn;
     switch (args.type) {
       case 'start':
@@ -76,7 +86,9 @@ export const agentGenerateMessage = internalAction({
       args.playerId as GameId<'players'>,
       args.otherPlayerId as GameId<'players'>,
     );
+    const generateMs = Date.now() - totalStart;
 
+    const sendStart = Date.now();
     await ctx.runMutation(internal.aiTown.agent.agentSendMessage, {
       worldId: args.worldId,
       conversationId: args.conversationId,
@@ -87,6 +99,10 @@ export const agentGenerateMessage = internalAction({
       leaveConversation: args.type === 'leave',
       operationId: args.operationId,
     });
+    console.log(
+      `[timing] agentGenerateMessage type=${args.type} generate=${generateMs}ms ` +
+        `send=${Date.now() - sendStart}ms total=${Date.now() - totalStart}ms`,
+    );
   },
 });
 
@@ -100,6 +116,7 @@ export const agentDoSomething = internalAction({
     operationId: v.string(),
   },
   handler: async (ctx, args) => {
+    const started = Date.now();
     const { player, agent } = args;
     const map = new WorldMap(args.map);
     const now = Date.now();
@@ -110,9 +127,11 @@ export const agentDoSomething = internalAction({
     const recentlyAttemptedInvite =
       agent.lastInviteAttempt && now < agent.lastInviteAttempt + CONVERSATION_COOLDOWN;
     const recentActivity = player.activity && now < player.activity.until + ACTIVITY_COOLDOWN;
+    let kind = 'invite';
     // Decide whether to do an activity or wander somewhere.
     if (!player.pathfinding) {
       if (recentActivity || justLeftConversation) {
+        kind = 'wander';
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -123,9 +142,11 @@ export const agentDoSomething = internalAction({
             destination: wanderDestination(map),
           },
         });
+        logTiming('agentDoSomething', started, { kind, agentId: agent.id });
         return;
       } else {
         // TODO: have LLM choose the activity & emoji
+        kind = 'activity';
         const activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
@@ -141,6 +162,7 @@ export const agentDoSomething = internalAction({
             },
           },
         });
+        logTiming('agentDoSomething', started, { kind, agentId: agent.id });
         return;
       }
     }
@@ -165,6 +187,11 @@ export const agentDoSomething = internalAction({
         agentId: args.agent.id,
         invitee,
       },
+    });
+    logTiming('agentDoSomething', started, {
+      kind,
+      agentId: agent.id,
+      hasInvitee: !!invitee,
     });
   },
 });

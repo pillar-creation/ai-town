@@ -6,11 +6,6 @@ import { conversationId, playerId } from './aiTown/ids';
 import { engineTables } from './engine/schema';
 
 export default defineSchema({
-  music: defineTable({
-    storageId: v.string(),
-    type: v.union(v.literal('background'), v.literal('player')),
-  }),
-
   messages: defineTable({
     conversationId,
     messageUuid: v.string(),
@@ -20,6 +15,20 @@ export default defineSchema({
   })
     .index('conversationId', ['worldId', 'conversationId'])
     .index('messageUuid', ['conversationId', 'messageUuid']),
+
+  // Side-channel chats between a human and an NPC. Completely outside world.conversations
+  // so they never interrupt agent simulation.
+  humanConversations: defineTable({
+    worldId: v.id('worlds'),
+    human: v.string(),
+    playerId,
+    humanPlayerId: playerId,
+    conversationId,
+    created: v.number(),
+    status: v.union(v.literal('active'), v.literal('ended')),
+  })
+    .index('world_human_status', ['worldId', 'human', 'status'])
+    .index('conversationId', ['conversationId']),
 
   ...agentTables,
   ...aiTownTables,

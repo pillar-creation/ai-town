@@ -55,13 +55,22 @@ class HistoryManager {
       }
       let foundIndex = null;
       let currentValue = histories[0].initialValue;
+      let prevTime: number | undefined;
+      let prevValue = currentValue;
       for (let i = 0; i < histories.length; i++) {
         const history = histories[i];
         for (const sample of history.samples) {
           if (sample.time > historicalTime) {
+            // Interpolate within the continuous segment to the next sample.
+            if (prevTime !== undefined && sample.time > prevTime) {
+              const t = (historicalTime - prevTime) / (sample.time - prevTime);
+              currentValue = prevValue + (sample.value - prevValue) * Math.min(1, Math.max(0, t));
+            }
             foundIndex = i;
             break;
           }
+          prevTime = sample.time;
+          prevValue = sample.value;
           currentValue = sample.value;
         }
         if (foundIndex !== null) {

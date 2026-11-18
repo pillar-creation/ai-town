@@ -14,17 +14,18 @@ services:
       - ai-town-network
   backend:
     image: ghcr.io/convex/convex-backend:latest
+    restart: unless-stopped
     ports:
       - '${PORT:-3210}:3210'
       - '${SITE_PROXY_PORT:-3211}:3211'
-      - '${OLLAMA_PORT:-11434}:11434'
     volumes:
       - data:/convex/data
     environment:
       - INSTANCE_NAME=${INSTANCE_NAME:-}
       - INSTANCE_SECRET=${INSTANCE_SECRET:-}
       - CONVEX_RELEASE_VERSION_DEV=${CONVEX_RELEASE_VERSION_DEV:-}
-      - ACTIONS_USER_TIMEOUT_SECS=${ACTIONS_USER_TIMEOUT_SECS:-}
+      - ACTIONS_USER_TIMEOUT_SECS=${ACTIONS_USER_TIMEOUT_SECS:-120}
+      - DATABASE_UDF_USER_TIMEOUT_SECONDS=${DATABASE_UDF_USER_TIMEOUT_SECONDS:-10}
       - CONVEX_CLOUD_ORIGIN=${URL_BASE:-http://127.0.0.1}:${PORT:-3210}
       - CONVEX_SITE_ORIGIN=${URL_BASE:-http://127.0.0.1}:${SITE_PROXY_PORT:-3211}
       - DATABASE_URL=${DATABASE_URL:-}

@@ -65,14 +65,20 @@ export const DELETE_BATCH_SIZE = 64;
 export const HUMAN_IDLE_TOO_LONG = 5 * 60 * 1000;
 
 export const ACTIVITIES = [
-  { description: 'reading a book', emoji: '📖', duration: 60_000 },
-  { description: 'daydreaming', emoji: '🤔', duration: 60_000 },
-  { description: 'gardening', emoji: '🥕', duration: 60_000 },
+  { description: 'reading a book', emoji: '📖', duration: 10_000 },
+  { description: 'daydreaming', emoji: '🤔', duration: 10_000 },
+  { description: 'gardening', emoji: '🥕', duration: 10_000 },
 ];
 
-export const ENGINE_ACTION_DURATION = 30000;
+// How long one `runStep` internalAction holds an isolate before rescheduling.
+// Self-hosted Convex has a tiny concurrency pool; 30s holds starve client queries
+// (defaultWorldStatus etc. hit 10s timeouts). Keep short so the semaphore is released often.
+export const ENGINE_ACTION_DURATION = 5_000;
 
 // Bound the number of pathfinding searches we do per game step.
 export const MAX_PATHFINDS_PER_STEP = 16;
 
 export const DEFAULT_NAME = 'Me';
+
+// Side-channel chat author — not a world player; chatting does not require joinWorld.
+export const HUMAN_CHAT_AUTHOR_ID = 'hc:me';

@@ -6,6 +6,7 @@ import { internal } from '../_generated/api';
 import { sleep } from '../util/sleep';
 import { Id } from '../_generated/dataModel';
 import { ENGINE_ACTION_DURATION } from '../constants';
+import { logTiming } from '../util/timing';
 
 export async function createEngine(ctx: MutationCtx) {
   const now = Date.now();
@@ -93,27 +94,65 @@ export const runStep = internalAction({
     maxDuration: v.number(),
   },
   handler: async (ctx, args) => {
+    const actionStarted = Date.now();
+    let steps = 0;
+    let loadMs = 0;
+    let stepMsTotal = 0;
     try {
+      const loadStarted = Date.now();
       const { engine, gameState } = await ctx.runQuery(internal.aiTown.game.loadWorld, {
         worldId: args.worldId,
         generationNumber: args.generationNumber,
       });
+      loadMs = Date.now() - loadStarted;
       const game = new Game(engine, args.worldId, gameState);
 
       let now = Date.now();
       const deadline = now + args.maxDuration;
       while (now < deadline) {
+        const engineTime = game.engine.currentTime ?? now;
+        const behindMs = now - engineTime;
+        const stepStarted = Date.now();
         await game.runStep(ctx, now);
+        stepMsTotal += Date.now() - stepStarted;
+        steps += 1;
+        now = Date.now();
+        // While draining backlog, skip pacing sleeps so we catch up with many
+        // ~1s steps (smooth for clients) instead of one huge history dump.
+        if (behindMs > game.stepDuration * 2) {
+          continue;
+        }
         const sleepUntil = Math.min(now + game.stepDuration, deadline);
-        await sleep(sleepUntil - now);
+        const sleepMs = sleepUntil - now;
+        if (sleepMs > 0) {
+          await sleep(sleepMs);
+        }
         now = Date.now();
       }
+      logTiming('aiTown.main.runStep', actionStarted, {
+        worldId: String(args.worldId),
+        gen: args.generationNumber,
+        maxDuration: args.maxDuration,
+        steps,
+        loadMs,
+        stepMsTotal,
+        players: gameState.world.players.length,
+        agents: gameState.world.agents.length,
+      });
       await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
         worldId: args.worldId,
         generationNumber: game.engine.generationNumber,
         maxDuration: args.maxDuration,
       });
     } catch (e: unknown) {
+      logTiming('aiTown.main.runStep.FAILED', actionStarted, {
+        worldId: String(args.worldId),
+        gen: args.generationNumber,
+        steps,
+        loadMs,
+        stepMsTotal,
+        error: e instanceof Error ? e.message : String(e),
+      });
       if (e instanceof ConvexError) {
         if (e.data.kind === 'engineNotRunning') {
           console.debug(`Engine is not running: ${e.message}`);

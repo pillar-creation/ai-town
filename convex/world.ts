@@ -1,5 +1,6 @@
 import { ConvexError, v } from 'convex/values';
-import { internalMutation, mutation, query } from './_generated/server';
+import { QueryCtx, internalMutation, mutation, query } from './_generated/server';
+import { Id } from './_generated/dataModel';
 import { characters } from '../data/characters';
 import { insertInput } from './aiTown/insertInput';
 import {
@@ -11,13 +12,19 @@ import {
 import { playerId } from './aiTown/ids';
 import { kickEngine, startEngine, stopEngine } from './aiTown/main';
 import { engineInsertInput } from './engine/abstractGame';
+import { logTiming, logTimingSlowOnly } from './util/timing';
 
 export const defaultWorldStatus = query({
   handler: async (ctx) => {
+    const started = Date.now();
     const worldStatus = await ctx.db
       .query('worldStatus')
-      .filter((q) => q.eq(q.field('isDefault'), true))
+      .withIndex('isDefault', (q) => q.eq('isDefault', true))
       .first();
+    logTimingSlowOnly('world.defaultWorldStatus', started, {
+      found: !!worldStatus,
+      status: worldStatus?.status ?? null,
+    });
     return worldStatus;
   },
 });
@@ -44,14 +51,15 @@ export const heartbeatWorld = mutation({
       });
     }
 
-    // Restart inactive worlds, but leave worlds explicitly stopped by the developer alone.
-    if (worldStatus.status === 'stoppedByDeveloper') {
-      console.debug(`World ${worldStatus._id} is stopped by developer, not restarting.`);
-    }
-    if (worldStatus.status === 'inactive') {
-      console.log(`Restarting inactive world ${worldStatus._id}...`);
+    // Restart worlds that are not simulating. Freeze/unfreeze is no longer a
+    // product surface, so stopped worlds should come back when someone is watching.
+    if (worldStatus.status !== 'running') {
+      console.log(`Restarting ${worldStatus.status} world ${worldStatus._id}...`);
       await ctx.db.patch(worldStatus._id, { status: 'running' });
-      await startEngine(ctx, worldStatus.worldId);
+      const engine = await ctx.db.get(worldStatus.engineId);
+      if (engine && !engine.running) {
+        await startEngine(ctx, worldStatus.worldId);
+      }
     }
   },
 });
@@ -113,27 +121,19 @@ export const joinWorld = mutation({
     worldId: v.id('worlds'),
   },
   handler: async (ctx, args) => {
-    // const identity = await ctx.auth.getUserIdentity();
-    // if (!identity) {
-    //   throw new ConvexError(`Not logged in`);
-    // }
-    // const name =
-    //   identity.givenName || identity.nickname || (identity.email && identity.email.split('@')[0]);
     const name = DEFAULT_NAME;
-
-    // if (!name) {
-    //   throw new ConvexError(`Missing name on ${JSON.stringify(identity)}`);
-    // }
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new ConvexError(`Invalid world ID: ${args.worldId}`);
     }
-    // const { tokenIdentifier } = identity;
+    const existingPlayer = world.players.find((p) => p.human === DEFAULT_NAME);
+    if (existingPlayer) {
+      return null;
+    }
     return await insertInput(ctx, world._id, 'join', {
       name,
       character: characters[Math.floor(Math.random() * characters.length)].name,
-      description: `${DEFAULT_NAME} is a human player`,
-      // description: `${identity.givenName} is a human player`,
+      description: `${DEFAULT_NAME} 是前来小镇闲逛、想和大家聊天的访客。`,
       tokenIdentifier: DEFAULT_NAME,
     });
   },
@@ -144,16 +144,10 @@ export const leaveWorld = mutation({
     worldId: v.id('worlds'),
   },
   handler: async (ctx, args) => {
-    // const identity = await ctx.auth.getUserIdentity();
-    // if (!identity) {
-    //   throw new Error(`Not logged in`);
-    // }
-    // const { tokenIdentifier } = identity;
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new Error(`Invalid world ID: ${args.worldId}`);
     }
-    // const existingPlayer = world.players.find((p) => p.human === tokenIdentifier);
     const existingPlayer = world.players.find((p) => p.human === DEFAULT_NAME);
     if (!existingPlayer) {
       return;
@@ -184,6 +178,7 @@ export const worldState = query({
     worldId: v.id('worlds'),
   },
   handler: async (ctx, args) => {
+    const started = Date.now();
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new Error(`Invalid world ID: ${args.worldId}`);
@@ -199,6 +194,14 @@ export const worldState = query({
     if (!engine) {
       throw new Error(`Invalid engine ID: ${worldStatus.engineId}`);
     }
+    // Re-runs ~every engine step; only log when slow to avoid drowning the backend.
+    logTimingSlowOnly('world.worldState', started, {
+      worldId: String(args.worldId),
+      players: world.players.length,
+      agents: world.agents.length,
+      conversations: world.conversations.length,
+      engineRunning: engine.running,
+    });
     return { world, engine };
   },
 });
@@ -208,6 +211,7 @@ export const gameDescriptions = query({
     worldId: v.id('worlds'),
   },
   handler: async (ctx, args) => {
+    const started = Date.now();
     const playerDescriptions = await ctx.db
       .query('playerDescriptions')
       .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
@@ -223,7 +227,55 @@ export const gameDescriptions = query({
     if (!worldMap) {
       throw new Error(`No map for world: ${args.worldId}`);
     }
+    logTimingSlowOnly('world.gameDescriptions', started, {
+      worldId: String(args.worldId),
+      players: playerDescriptions.length,
+      agents: agentDescriptions.length,
+      map: `${worldMap.width}x${worldMap.height}`,
+    });
     return { worldMap, playerDescriptions, agentDescriptions };
+  },
+});
+
+/** One-shot probe: `npx convex run world:backendDiagnostics` */
+export const backendDiagnostics = query({
+  args: {},
+  handler: async (ctx) => {
+    const started = Date.now();
+    const worldStatus = await ctx.db
+      .query('worldStatus')
+      .withIndex('isDefault', (q) => q.eq('isDefault', true))
+      .first();
+    if (!worldStatus) {
+      return { ok: false as const, reason: 'no default world', totalMs: Date.now() - started };
+    }
+    const world = await ctx.db.get(worldStatus.worldId);
+    const engine = await ctx.db.get(worldStatus.engineId);
+    const maps = await ctx.db
+      .query('maps')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const playerDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const result = {
+      ok: true as const,
+      worldId: worldStatus.worldId,
+      engineId: worldStatus.engineId,
+      worldStatus: worldStatus.status,
+      engineRunning: engine?.running ?? null,
+      engineCurrentTime: engine?.currentTime ?? null,
+      players: world?.players.length ?? 0,
+      agents: world?.agents.length ?? 0,
+      conversations: world?.conversations.length ?? 0,
+      playerDescriptions: playerDescriptions.length,
+      maps: maps.length,
+      engineActionDurationMs: ENGINE_ACTION_DURATION,
+      totalMs: Date.now() - started,
+    };
+    logTiming('world.backendDiagnostics', started, result as unknown as Record<string, unknown>);
+    return result;
   },
 });
 
@@ -253,5 +305,136 @@ export const previousConversation = query({
       }
     }
     return null;
+  },
+});
+
+async function playerName(ctx: QueryCtx, worldId: Id<'worlds'>, id: string): Promise<string> {
+  const description = await ctx.db
+    .query('playerDescriptions')
+    .withIndex('worldId', (q) => q.eq('worldId', worldId).eq('playerId', id))
+    .first();
+  return description?.name ?? id;
+}
+
+export const playerConversationHistory = query({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+  },
+  handler: async (ctx, args) => {
+    const archived = await ctx.db
+      .query('archivedConversations')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+
+    const mine = archived
+      .filter(
+        (conversation) =>
+          conversation.participants.includes(args.playerId) && conversation.numMessages > 0,
+      )
+      .sort((a, b) => b.created - a.created)
+      .slice(0, 30);
+
+    const conversations = [];
+    for (const conversation of mine) {
+      const otherPlayerIds = conversation.participants.filter((id) => id !== args.playerId);
+      const others = await Promise.all(
+        otherPlayerIds.map(async (id) => ({
+          playerId: id,
+          name: await playerName(ctx, args.worldId, id),
+        })),
+      );
+
+      const messages = await ctx.db
+        .query('messages')
+        .withIndex('conversationId', (q) =>
+          q.eq('worldId', args.worldId).eq('conversationId', conversation.id),
+        )
+        .collect();
+
+      conversations.push({
+        conversationId: conversation.id,
+        created: conversation.created,
+        ended: conversation.ended,
+        others,
+        messages: await Promise.all(
+          [...messages]
+            .sort((a, b) => a._creationTime - b._creationTime)
+            .map(async (message) => ({
+              _id: message._id,
+              author: message.author,
+              authorName: await playerName(ctx, args.worldId, message.author),
+              text: message.text,
+              _creationTime: message._creationTime,
+            })),
+        ),
+      });
+    }
+    return conversations;
+  },
+});
+
+const MEMORY_TYPE_LABELS = {
+  conversation: '对话回忆',
+  reflection: '自我反思',
+  relationship: '关系印象',
+} as const;
+
+/** 角色 / agent 的记忆流动作回顾（对话总结、反思、关系印象）。 */
+export const playerActionHistory = query({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+  },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) {
+      throw new Error(`Invalid world ID: ${args.worldId}`);
+    }
+
+    const agent = world.agents.find((a) => a.playerId === args.playerId);
+    const agentDescription = agent
+      ? await ctx.db
+          .query('agentDescriptions')
+          .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('agentId', agent.id))
+          .unique()
+      : null;
+
+    const playerDescription = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .first();
+
+    const memories = await ctx.db
+      .query('memories')
+      .withIndex('playerId', (q) => q.eq('playerId', args.playerId))
+      .order('desc')
+      .take(50);
+
+    return {
+      playerName: playerDescription?.name ?? args.playerId,
+      agent: agent
+        ? {
+            agentId: agent.id,
+            identity: agentDescription?.identity ?? '',
+            plan: agentDescription?.plan ?? '',
+            inProgressOperation: agent.inProgressOperation
+              ? {
+                  name: agent.inProgressOperation.name,
+                  started: agent.inProgressOperation.started,
+                }
+              : null,
+          }
+        : null,
+      actions: memories.map((memory) => ({
+        _id: memory._id,
+        description: memory.description,
+        importance: memory.importance,
+        lastAccess: memory.lastAccess,
+        created: memory._creationTime,
+        type: memory.data.type,
+        typeLabel: MEMORY_TYPE_LABELS[memory.data.type],
+      })),
+    };
   },
 });

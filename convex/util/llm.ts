@@ -102,9 +102,9 @@ export function getLLMConfig(): LLMConfig {
   return {
     provider: 'ollama',
     url: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434',
-    chatModel: process.env.OLLAMA_MODEL ?? 'llama3',
+    chatModel: process.env.OLLAMA_MODEL ?? 'qwen2.5',
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'mxbai-embed-large',
-    stopWords: ['<|eot_id|>'],
+    stopWords: ['<|eot_id|>', '<|im_end|>'],
     apiKey: undefined,
   };
 }
@@ -141,7 +141,11 @@ export async function chatCompletion(
   body.model = body.model ?? config.chatModel;
   const stopWords = body.stop ? (typeof body.stop === 'string' ? [body.stop] : body.stop) : [];
   if (config.stopWords) stopWords.push(...config.stopWords);
-  console.log(body);
+  // Keep chat+embedding models resident on Ollama so NPC turns don't pay
+  // 1–3s reload every time we alternate qwen ↔ mxbai-embed.
+  const requestBody =
+    config.provider === 'ollama' ? { ...body, keep_alive: -1 } : body;
+  console.log(requestBody);
   const {
     result: content,
     retries,
@@ -154,7 +158,7 @@ export async function chatCompletion(
         ...AuthHeaders(),
       },
 
-      body: JSON.stringify(body),
+      body: JSON.stringify(requestBody),
     });
     if (!result.ok) {
       const error = await result.text();
@@ -687,13 +691,18 @@ export class ChatCompletionContent {
 
 export async function ollamaFetchEmbedding(text: string) {
   const config = getLLMConfig();
-  const { result } = await retryWithBackoff(async () => {
+  const { result, ms, retries } = await retryWithBackoff(async () => {
     const resp = await fetch(config.url + '/api/embeddings', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: config.embeddingModel, prompt: text }),
+      body: JSON.stringify({
+        model: config.embeddingModel,
+        prompt: text,
+        // Pin embedding model in VRAM alongside the chat model (16GB is enough).
+        keep_alive: -1,
+      }),
     });
     if (resp.status === 404) {
       const error = await resp.text();
@@ -702,5 +711,6 @@ export async function ollamaFetchEmbedding(text: string) {
     }
     return (await resp.json()).embedding as number[];
   });
-  return { embedding: result };
+  console.log(`[timing] ollama.embedding: ${ms}ms (retries=${retries} model=${config.embeddingModel})`);
+  return { embedding: result, ms, retries };
 }

@@ -25,6 +25,7 @@ import { internal } from '../_generated/api';
 import { HistoricalObject } from '../engine/historicalObject';
 import { AgentDescription, serializedAgentDescription } from './agentDescription';
 import { parseMap, serializeMap } from '../util/object';
+import { logTiming, logTimingSlowOnly } from '../util/timing';
 
 const gameState = v.object({
   world: v.object(serializedWorld),
@@ -353,7 +354,15 @@ export const loadWorld = internalQuery({
     generationNumber: v.number(),
   },
   handler: async (ctx, args) => {
-    return await Game.load(ctx.db, args.worldId, args.generationNumber);
+    const started = Date.now();
+    const result = await Game.load(ctx.db, args.worldId, args.generationNumber);
+    logTimingSlowOnly('aiTown.game.loadWorld', started, {
+      worldId: String(args.worldId),
+      players: result.gameState.world.players.length,
+      agents: result.gameState.world.agents.length,
+      conversations: result.gameState.world.conversations.length,
+    });
+    return result;
   },
 });
 
@@ -365,7 +374,24 @@ export const saveWorld = internalMutation({
     worldDiff: gameStateDiff,
   },
   handler: async (ctx, args) => {
+    const started = Date.now();
     await applyEngineUpdate(ctx, args.engineId, args.engineUpdate);
+    const applyMs = Date.now() - started;
+    const diffStarted = Date.now();
     await Game.saveDiff(ctx, args.worldId, args.worldDiff);
+    // Every ~1s; only log slow saves (these block the isolate pool).
+    logTimingSlowOnly('aiTown.game.saveWorld', started, {
+      worldId: String(args.worldId),
+      applyMs,
+      saveDiffMs: Date.now() - diffStarted,
+      players: args.worldDiff.world.players.length,
+      agents: args.worldDiff.world.agents.length,
+      agentOps: args.worldDiff.agentOperations.length,
+      hasDescriptions: !!(
+        args.worldDiff.playerDescriptions ||
+        args.worldDiff.agentDescriptions ||
+        args.worldDiff.worldMap
+      ),
+    });
   },
 });

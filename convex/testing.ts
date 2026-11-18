@@ -1,16 +1,10 @@
 import { Id, TableNames } from './_generated/dataModel';
 import { internal } from './_generated/api';
-import {
-  DatabaseReader,
-  internalAction,
-  internalMutation,
-  mutation,
-  query,
-} from './_generated/server';
+import { DatabaseReader, internalAction, internalMutation } from './_generated/server';
 import { v } from 'convex/values';
 import schema from './schema';
 import { DELETE_BATCH_SIZE } from './constants';
-import { kickEngine, startEngine, stopEngine } from './aiTown/main';
+import { kickEngine } from './aiTown/main';
 import { insertInput } from './aiTown/insertInput';
 import { fetchEmbedding } from './util/llm';
 import { chatCompletion } from './util/llm';
@@ -56,47 +50,6 @@ export const kick = internalMutation({
   handler: async (ctx) => {
     const { worldStatus } = await getDefaultWorld(ctx.db);
     await kickEngine(ctx, worldStatus.worldId);
-  },
-});
-
-export const stopAllowed = query({
-  handler: async () => {
-    return !process.env.STOP_NOT_ALLOWED;
-  },
-});
-
-export const stop = mutation({
-  handler: async (ctx) => {
-    if (process.env.STOP_NOT_ALLOWED) throw new Error('Stop not allowed');
-    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
-    if (worldStatus.status === 'inactive' || worldStatus.status === 'stoppedByDeveloper') {
-      if (engine.running) {
-        throw new Error(`Engine ${engine._id} isn't stopped?`);
-      }
-      console.debug(`World ${worldStatus.worldId} is already inactive`);
-      return;
-    }
-    console.log(`Stopping engine ${engine._id}...`);
-    await ctx.db.patch(worldStatus._id, { status: 'stoppedByDeveloper' });
-    await stopEngine(ctx, worldStatus.worldId);
-  },
-});
-
-export const resume = mutation({
-  handler: async (ctx) => {
-    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
-    if (worldStatus.status === 'running') {
-      if (!engine.running) {
-        throw new Error(`Engine ${engine._id} isn't running?`);
-      }
-      console.debug(`World ${worldStatus.worldId} is already running`);
-      return;
-    }
-    console.log(
-      `Resuming engine ${engine._id} for world ${worldStatus.worldId} (state: ${worldStatus.status})...`,
-    );
-    await ctx.db.patch(worldStatus._id, { status: 'running' });
-    await startEngine(ctx, worldStatus.worldId);
   },
 });
 
@@ -200,5 +153,43 @@ export const testConvo = internalAction({
       'p:6' as GameId<'players'>,
     )) as any;
     return await a.readAll();
+  },
+});
+
+/** Isolated timing probe for conversation-start bottlenecks (no world mutation). */
+export const timeConversationBottlenecks = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const totalStart = Date.now();
+
+    const embStart = Date.now();
+    const embedding = await fetchEmbedding('Alice 正在和 Bob 说话');
+    const embeddingMs = Date.now() - embStart;
+
+    const llmStart = Date.now();
+    const completion = await chatCompletion({
+      messages: [
+        {
+          role: 'system',
+          content:
+            '你是 Alice，刚刚开始和 Bob 聊天。始终使用简体中文回复。语气口语化。回复不超过 50 字。',
+        },
+        { role: 'user', content: 'Alice to Bob:' },
+      ],
+      max_tokens: 80,
+    });
+    const llmWallMs = Date.now() - llmStart;
+
+    const result = {
+      embeddingMs,
+      embeddingReportedMs: (embedding as { ms?: number }).ms ?? null,
+      llmWallMs,
+      llmReportedMs: completion.ms,
+      llmRetries: completion.retries,
+      sampleReply: completion.content.slice(0, 80),
+      totalMs: Date.now() - totalStart,
+    };
+    console.log('[timing] conversationBottlenecks', result);
+    return result;
   },
 });
