@@ -51,9 +51,9 @@ export function Messages({
         ref={messagesScrollRef}
         className="bg-brown-200 text-black p-2 flex-1 min-h-0 overflow-y-auto"
       >
-        {messages.length === 0 && (
+        {messages.length === 0 && !isTyping && (
           <div className="leading-tight mb-6">
-            <p className="text-brown-700 text-center">对话已开启，打个招呼吧</p>
+            <p className="text-brown-700 text-center">对话已开启，对方马上开口…</p>
           </div>
         )}
         {messages.map((m) => (

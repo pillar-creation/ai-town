@@ -33,7 +33,7 @@ export class GameErrorBoundary extends Component<Props, State> {
           <p className="text-lg font-display tracking-wide">小镇连接中断</p>
           <p className="max-w-md text-sm opacity-90 font-system">
             {timedOut
-              ? '后端查询超时（Convex 过载）。点重试会刷新页面；若反复出现，请重启 Docker 里的 convex backend。'
+              ? '后端查询超时。点重试会刷新页面；若反复出现，请检查后端服务是否正常。'
               : message}
           </p>
           <button

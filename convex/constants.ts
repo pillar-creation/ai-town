@@ -70,10 +70,14 @@ export const ACTIVITIES = [
   { description: 'gardening', emoji: '🥕', duration: 10_000 },
 ];
 
-// How long one `runStep` internalAction holds an isolate before rescheduling.
-// Self-hosted Convex has a tiny concurrency pool; 30s holds starve client queries
-// (defaultWorldStatus etc. hit 10s timeouts). Keep short so the semaphore is released often.
+// Max wall time one `runStep` action spends catching up before yielding.
+// On-time ticks now reschedule with `scheduler.runAfter` instead of sleeping
+// inside the action, so this no longer includes the 1s pacing gap.
 export const ENGINE_ACTION_DURATION = 5_000;
+
+// Don't kick a new runStep while a slow one may still be queued. 2x action
+// duration (10s) races with saveWorld timeouts and stampedes the isolate pool.
+export const ENGINE_DEAD_TIMEOUT = 120_000;
 
 // Bound the number of pathfinding searches we do per game step.
 export const MAX_PATHFINDS_PER_STEP = 16;

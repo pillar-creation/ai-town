@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import { KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-toastify';
 import { DEFAULT_NAME } from '../../convex/constants';
+import { reportMetric } from '../utils/metrics.ts';
 
 export function MessageInput({
   humanName,
@@ -59,16 +60,16 @@ export function MessageInput({
     const started = performance.now();
     try {
       await onSend(text);
-      console.log(
-        `[timing] ui.sendMessage.total: ${Math.round(performance.now() - started)}ms`,
-      );
+      const totalMs = Math.round(performance.now() - started);
+      console.log(`[timing] ui.sendMessage.total: ${totalMs}ms`);
+      reportMetric('ui.sendMessage.total', totalMs);
       requestAnimationFrame(() => {
         inputRef.current?.focus();
       });
     } catch (err: any) {
-      console.log(
-        `[timing] ui.sendMessage.failed: ${Math.round(performance.now() - started)}ms`,
-      );
+      const failedMs = Math.round(performance.now() - started);
+      console.log(`[timing] ui.sendMessage.failed: ${failedMs}ms`);
+      reportMetric('ui.sendMessage.failed', failedMs);
       toast.error(err?.message ?? '发送失败');
       requestAnimationFrame(() => {
         inputRef.current?.focus();

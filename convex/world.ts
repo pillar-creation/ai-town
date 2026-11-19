@@ -6,6 +6,7 @@ import { insertInput } from './aiTown/insertInput';
 import {
   DEFAULT_NAME,
   ENGINE_ACTION_DURATION,
+  HUMAN_CHAT_AUTHOR_ID,
   IDLE_WORLD_TIMEOUT,
   WORLD_HEARTBEAT_INTERVAL,
 } from './constants';
@@ -79,12 +80,108 @@ export const stopInactiveWorlds = internalMutation({
   },
 });
 
+/** Stop the default world so client queries can run when the isolate pool is wedged. */
+export const freezeDefaultWorld = mutation({
+  handler: async (ctx) => {
+    const worldStatus = await ctx.db
+      .query('worldStatus')
+      .withIndex('isDefault', (q) => q.eq('isDefault', true))
+      .first();
+    if (!worldStatus) {
+      return { ok: false as const };
+    }
+    await ctx.db.patch(worldStatus._id, { status: 'inactive' });
+    const engine = await ctx.db.get(worldStatus.engineId);
+    if (engine?.running) {
+      await ctx.db.patch(engine._id, {
+        running: false,
+        generationNumber: engine.generationNumber + 1,
+      });
+    }
+    return { ok: true as const, worldId: worldStatus.worldId };
+  },
+});
+
+/**
+ * Recover a wedged simulation: drop in-world conversations / stuck agent ops,
+ * jump engine time to wall clock, and restart the loop. Use when NPCs look
+ * frozen because runStep fell minutes behind.
+ */
+export const recoverDefaultWorld = mutation({
+  handler: async (ctx) => {
+    const worldStatus = await ctx.db
+      .query('worldStatus')
+      .withIndex('isDefault', (q) => q.eq('isDefault', true))
+      .first();
+    if (!worldStatus) {
+      return { ok: false as const, reason: 'no-default-world' as const };
+    }
+    const world = await ctx.db.get(worldStatus.worldId);
+    if (!world) {
+      return { ok: false as const, reason: 'missing-world' as const };
+    }
+    const engine = await ctx.db.get(worldStatus.engineId);
+    if (!engine) {
+      return { ok: false as const, reason: 'missing-engine' as const };
+    }
+
+    const clearedConversations = world.conversations.length;
+    const clearedOps = world.agents.filter((a) => a.inProgressOperation).length;
+
+    const players = world.players.map((p) => {
+      const next = { ...p };
+      delete next.pathfinding;
+      delete next.activity;
+      next.speed = 0;
+      return next;
+    });
+    const agents = world.agents.map((a, i) => {
+      const next = { ...a };
+      delete next.inProgressOperation;
+      delete next.toRemember;
+      // Stagger invite eligibility so agents don't all fire agentDoSomething together.
+      next.lastInviteAttempt = Date.now() + i * 20_000;
+      return next;
+    });
+
+    await ctx.db.replace(world._id, {
+      ...world,
+      players,
+      agents,
+      conversations: [],
+    });
+
+    const now = Date.now();
+    // Invalidate in-flight runSteps / agent ops tied to the old generation.
+    if (engine.running) {
+      await ctx.db.patch(engine._id, {
+        running: false,
+        generationNumber: engine.generationNumber + 1,
+      });
+    }
+    await ctx.db.patch(worldStatus._id, {
+      status: 'running',
+      lastViewed: now,
+    });
+    await startEngine(ctx, worldStatus.worldId);
+    const restarted = await ctx.db.get(worldStatus.engineId);
+
+    return {
+      ok: true as const,
+      worldId: worldStatus.worldId,
+      clearedConversations,
+      clearedOps,
+      generationNumber: restarted?.generationNumber ?? engine.generationNumber + 1,
+    };
+  },
+});
+
 export const restartDeadWorlds = internalMutation({
   handler: async (ctx) => {
-    const now = Date.now();
-
-    // Restart an engine if it hasn't run for 2x its action duration.
-    const engineTimeout = now - ENGINE_ACTION_DURATION * 2;
+    // Only restart when the loop is actually stopped. Comparing simulation
+    // `currentTime` to wall clock is wrong: a healthy engine can fall minutes
+    // behind while catching up, and kicking it every minute causes generation
+    // mismatches that wedge the isolate pool (NPCs look frozen).
     const worlds = await ctx.db.query('worldStatus').collect();
     for (const worldStatus of worlds) {
       if (worldStatus.status !== 'running') {
@@ -94,9 +191,9 @@ export const restartDeadWorlds = internalMutation({
       if (!engine) {
         throw new Error(`Invalid engine ID: ${worldStatus.engineId}`);
       }
-      if (engine.currentTime && engine.currentTime < engineTimeout) {
-        console.warn(`Restarting dead engine ${engine._id}...`);
-        await kickEngine(ctx, worldStatus.worldId);
+      if (!engine.running) {
+        console.warn(`Restarting stopped engine ${engine._id} for running world...`);
+        await startEngine(ctx, worldStatus.worldId);
       }
     }
   },
@@ -308,12 +405,21 @@ export const previousConversation = query({
   },
 });
 
-async function playerName(ctx: QueryCtx, worldId: Id<'worlds'>, id: string): Promise<string> {
-  const description = await ctx.db
+const HISTORY_CONVERSATION_LIMIT = 20;
+const HISTORY_MESSAGES_PER_CONVERSATION = 40;
+
+async function loadPlayerNameMap(ctx: QueryCtx, worldId: Id<'worlds'>) {
+  const descriptions = await ctx.db
     .query('playerDescriptions')
-    .withIndex('worldId', (q) => q.eq('worldId', worldId).eq('playerId', id))
-    .first();
-  return description?.name ?? id;
+    .withIndex('worldId', (q) => q.eq('worldId', worldId))
+    .collect();
+  const names = new Map<string, string>();
+  for (const description of descriptions) {
+    names.set(description.playerId, description.name);
+  }
+  names.set(HUMAN_CHAT_AUTHOR_ID, DEFAULT_NAME);
+  names.set(DEFAULT_NAME, DEFAULT_NAME);
+  return names;
 }
 
 export const playerConversationHistory = query({
@@ -322,28 +428,53 @@ export const playerConversationHistory = query({
     playerId,
   },
   handler: async (ctx, args) => {
-    const archived = await ctx.db
-      .query('archivedConversations')
-      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
-      .collect();
+    const started = Date.now();
 
-    const mine = archived
-      .filter(
-        (conversation) =>
-          conversation.participants.includes(args.playerId) && conversation.numMessages > 0,
+    // Use the player edge index instead of scanning every archived conversation.
+    const edgeStarted = Date.now();
+    const seen = new Set<string>();
+    const conversationIds: string[] = [];
+    const edges = ctx.db
+      .query('participatedTogether')
+      .withIndex('playerHistory', (q) =>
+        q.eq('worldId', args.worldId).eq('player1', args.playerId),
       )
-      .sort((a, b) => b.created - a.created)
-      .slice(0, 30);
+      .order('desc');
+    for await (const edge of edges) {
+      if (seen.has(edge.conversationId)) {
+        continue;
+      }
+      seen.add(edge.conversationId);
+      conversationIds.push(edge.conversationId);
+      if (conversationIds.length >= HISTORY_CONVERSATION_LIMIT) {
+        break;
+      }
+    }
+    const edgeMs = Date.now() - edgeStarted;
+
+    const nameStarted = Date.now();
+    const names = await loadPlayerNameMap(ctx, args.worldId);
+    const nameMs = Date.now() - nameStarted;
 
     const conversations = [];
-    for (const conversation of mine) {
+    let messageRows = 0;
+    const hydrateStarted = Date.now();
+    for (const conversationIdValue of conversationIds) {
+      const conversation = await ctx.db
+        .query('archivedConversations')
+        .withIndex('worldId', (q) =>
+          q.eq('worldId', args.worldId).eq('id', conversationIdValue),
+        )
+        .unique();
+      if (!conversation || conversation.numMessages <= 0) {
+        continue;
+      }
+
       const otherPlayerIds = conversation.participants.filter((id) => id !== args.playerId);
-      const others = await Promise.all(
-        otherPlayerIds.map(async (id) => ({
-          playerId: id,
-          name: await playerName(ctx, args.worldId, id),
-        })),
-      );
+      const others = otherPlayerIds.map((id) => ({
+        playerId: id,
+        name: names.get(id) ?? id,
+      }));
 
       const messages = await ctx.db
         .query('messages')
@@ -351,25 +482,39 @@ export const playerConversationHistory = query({
           q.eq('worldId', args.worldId).eq('conversationId', conversation.id),
         )
         .collect();
+      const sorted = [...messages].sort((a, b) => a._creationTime - b._creationTime);
+      const clipped =
+        sorted.length > HISTORY_MESSAGES_PER_CONVERSATION
+          ? sorted.slice(-HISTORY_MESSAGES_PER_CONVERSATION)
+          : sorted;
+      messageRows += clipped.length;
 
       conversations.push({
         conversationId: conversation.id,
         created: conversation.created,
         ended: conversation.ended,
         others,
-        messages: await Promise.all(
-          [...messages]
-            .sort((a, b) => a._creationTime - b._creationTime)
-            .map(async (message) => ({
-              _id: message._id,
-              author: message.author,
-              authorName: await playerName(ctx, args.worldId, message.author),
-              text: message.text,
-              _creationTime: message._creationTime,
-            })),
-        ),
+        messages: clipped.map((message) => ({
+          _id: message._id,
+          author: message.author,
+          authorName:
+            names.get(message.author) ??
+            (message.author.startsWith('hc:') ? DEFAULT_NAME : message.author),
+          text: message.text,
+          _creationTime: message._creationTime,
+        })),
       });
     }
+
+    logTiming('world.playerConversationHistory', started, {
+      edges: conversationIds.length,
+      conversations: conversations.length,
+      messageRows,
+      edgeMs,
+      nameMs,
+      hydrateMs: Date.now() - hydrateStarted,
+      totalMs: Date.now() - started,
+    });
     return conversations;
   },
 });
@@ -387,45 +532,34 @@ export const playerActionHistory = query({
     playerId,
   },
   handler: async (ctx, args) => {
-    const world = await ctx.db.get(args.worldId);
-    if (!world) {
-      throw new Error(`Invalid world ID: ${args.worldId}`);
-    }
-
-    const agent = world.agents.find((a) => a.playerId === args.playerId);
-    const agentDescription = agent
-      ? await ctx.db
-          .query('agentDescriptions')
-          .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('agentId', agent.id))
-          .unique()
-      : null;
-
+    const started = Date.now();
+    // Avoid reading the hot `worlds` document (contended with saveWorld).
+    // Agent identity/plan/in-progress come from the live client game state.
     const playerDescription = await ctx.db
       .query('playerDescriptions')
       .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
       .first();
+    const descMs = Date.now() - started;
 
+    const memStarted = Date.now();
     const memories = await ctx.db
       .query('memories')
       .withIndex('playerId', (q) => q.eq('playerId', args.playerId))
       .order('desc')
-      .take(50);
+      .take(40);
+    const memoriesMs = Date.now() - memStarted;
+
+    logTiming('world.playerActionHistory', started, {
+      descMs,
+      memoriesMs,
+      memories: memories.length,
+      totalMs: Date.now() - started,
+    });
 
     return {
       playerName: playerDescription?.name ?? args.playerId,
-      agent: agent
-        ? {
-            agentId: agent.id,
-            identity: agentDescription?.identity ?? '',
-            plan: agentDescription?.plan ?? '',
-            inProgressOperation: agent.inProgressOperation
-              ? {
-                  name: agent.inProgressOperation.name,
-                  started: agent.inProgressOperation.started,
-                }
-              : null,
-          }
-        : null,
+      // Kept for API compatibility; UI should prefer live game descriptions.
+      agent: null,
       actions: memories.map((memory) => ({
         _id: memory._id,
         description: memory.description,

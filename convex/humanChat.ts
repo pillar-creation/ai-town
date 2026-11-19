@@ -10,6 +10,7 @@ import { conversationId, playerId } from './aiTown/ids';
 import { DEFAULT_NAME, HUMAN_CHAT_AUTHOR_ID } from './constants';
 import { internal } from './_generated/api';
 import { chatCompletion, fetchEmbedding, LLMMessage } from './util/llm';
+import { logAndPersistMutation } from './monitor';
 
 /**
  * Human↔NPC chat persistence + prompt context.
@@ -158,6 +159,9 @@ export const startChat = mutation({
     playerId,
     // Client-generated id (hc:uuid) so local UI and Convex stay in sync.
     conversationId: v.optional(conversationId),
+    // When true, end any active chat with this NPC and start a fresh one so
+    // the NPC can speak first (avoids reusing empty/stub sessions).
+    forceNew: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const started = Date.now();
@@ -180,22 +184,30 @@ export const startChat = mutation({
       .collect();
 
     for (const chat of existing) {
-      if (chat.playerId === args.playerId) {
-        // Same NPC already active — keep the existing conversationId so prior
-        // messages stay linked. Client must adopt this id for persistMessage.
-        if (args.conversationId && args.conversationId !== chat.conversationId) {
-          console.log(
-            `[timing] humanChat.startChat.reuseDifferentId requested=${args.conversationId} existing=${chat.conversationId}`,
-          );
+      if (chat.playerId === args.playerId && !args.forceNew) {
+        const priorMessages = await ctx.db
+          .query('messages')
+          .withIndex('conversationId', (q) =>
+            q.eq('worldId', args.worldId).eq('conversationId', chat.conversationId),
+          )
+          .take(1);
+        // Empty active chats are not worth reusing — they block NPC-first greetings.
+        if (priorMessages.length > 0) {
+          if (args.conversationId && args.conversationId !== chat.conversationId) {
+            console.log(
+              `[timing] humanChat.startChat.reuseDifferentId requested=${args.conversationId} existing=${chat.conversationId}`,
+            );
+          }
+          await logAndPersistMutation(ctx, 'humanChat.startChat', started, {
+            mode: 'reuse',
+            conversationId: chat.conversationId,
+          });
+          return {
+            conversationId: chat.conversationId,
+            playerId: chat.playerId,
+            humanPlayerId: chat.humanPlayerId,
+          };
         }
-        console.log(
-          `[timing] humanChat.startChat.total: ${Date.now() - started}ms (reuse ${chat.conversationId})`,
-        );
-        return {
-          conversationId: chat.conversationId,
-          playerId: chat.playerId,
-          humanPlayerId: chat.humanPlayerId,
-        };
       }
       await ctx.db.patch(chat._id, { status: 'ended' });
       await ctx.scheduler.runAfter(0, internal.humanChat.rememberHumanConversation, {
@@ -216,9 +228,10 @@ export const startChat = mutation({
       created,
       status: 'active',
     });
-    console.log(
-      `[timing] humanChat.startChat.total: ${Date.now() - started}ms (new ${conversationIdValue})`,
-    );
+    await logAndPersistMutation(ctx, 'humanChat.startChat', started, {
+      mode: 'new',
+      conversationId: conversationIdValue,
+    });
     return {
       conversationId: conversationIdValue,
       playerId: args.playerId,

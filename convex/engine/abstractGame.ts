@@ -19,13 +19,19 @@ export abstract class AbstractGame {
   beginStep(now: number) {}
   abstract saveStep(ctx: ActionCtx, engineUpdate: EngineUpdate): Promise<void>;
 
-  async runStep(ctx: ActionCtx, now: number) {
+  async runStep(
+    ctx: ActionCtx,
+    now: number,
+  ): Promise<{ loadInputsMs: number; simulateMs: number; saveMs: number }> {
+    const loadStarted = Date.now();
     const inputs = await ctx.runQuery(internal.engine.abstractGame.loadInputs, {
       engineId: this.engine._id,
       processedInputNumber: this.engine.processedInputNumber,
       max: this.maxInputsPerStep,
     });
+    const loadInputsMs = Date.now() - loadStarted;
 
+    const simStarted = Date.now();
     const lastStepTs = this.engine.currentTime;
     const startTs = lastStepTs ? lastStepTs + this.tickDuration : now;
     // Cap how much sim time one persisted step covers. Dumping multi-second
@@ -85,9 +91,14 @@ export abstract class AbstractGame {
     this.engine.processedInputNumber = processedInputNumber;
     const { _id, _creationTime, ...engine } = this.engine;
     const engineUpdate = { engine, completedInputs, expectedGenerationNumber };
+    const simulateMs = Date.now() - simStarted;
+
+    const saveStarted = Date.now();
     await this.saveStep(ctx, engineUpdate);
+    const saveMs = Date.now() - saveStarted;
 
     console.debug(`Simulated from ${startTs} to ${currentTs} (${currentTs - startTs}ms)`);
+    return { loadInputsMs, simulateMs, saveMs };
   }
 }
 

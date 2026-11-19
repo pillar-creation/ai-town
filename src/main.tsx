@@ -6,13 +6,15 @@ import 'uplot/dist/uPlot.min.css';
 import 'react-toastify/dist/ReactToastify.css';
 import ConvexClientProvider from './components/ConvexClientProvider.tsx';
 import { GameErrorBoundary } from './components/GameErrorBoundary.tsx';
+import MonitorPage, { shouldShowMonitor } from './components/MonitorPage.tsx';
+
+const showMonitor = shouldShowMonitor();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ConvexClientProvider>
-      {/* Must wrap Home: usePrefetchWorldData / useQuery throw on Convex timeouts during render. */}
       <GameErrorBoundary>
-        <Home />
+        {showMonitor ? <MonitorPage /> : <Home />}
       </GameErrorBoundary>
     </ConvexClientProvider>
   </React.StrictMode>,

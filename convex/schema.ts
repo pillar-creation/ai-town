@@ -30,6 +30,15 @@ export default defineSchema({
     .index('world_human_status', ['worldId', 'human', 'status'])
     .index('conversationId', ['conversationId']),
 
+  // Local-dev timing samples for /ai-town/monitor (not for production analytics).
+  monitorEvents: defineTable({
+    source: v.string(),
+    label: v.string(),
+    ms: v.number(),
+    at: v.number(),
+    extra: v.optional(v.string()),
+  }).index('by_at', ['at']),
+
   ...agentTables,
   ...aiTownTables,
   ...engineTables,

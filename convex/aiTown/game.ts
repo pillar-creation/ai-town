@@ -25,7 +25,8 @@ import { internal } from '../_generated/api';
 import { HistoricalObject } from '../engine/historicalObject';
 import { AgentDescription, serializedAgentDescription } from './agentDescription';
 import { parseMap, serializeMap } from '../util/object';
-import { logTiming, logTimingSlowOnly } from '../util/timing';
+import { logTimingSlowOnly } from '../util/timing';
+import { logAndPersistMutation } from '../monitor';
 
 const gameState = v.object({
   world: v.object(serializedWorld),
@@ -379,19 +380,25 @@ export const saveWorld = internalMutation({
     const applyMs = Date.now() - started;
     const diffStarted = Date.now();
     await Game.saveDiff(ctx, args.worldId, args.worldDiff);
-    // Every ~1s; only log slow saves (these block the isolate pool).
-    logTimingSlowOnly('aiTown.game.saveWorld', started, {
-      worldId: String(args.worldId),
-      applyMs,
-      saveDiffMs: Date.now() - diffStarted,
-      players: args.worldDiff.world.players.length,
-      agents: args.worldDiff.world.agents.length,
-      agentOps: args.worldDiff.agentOperations.length,
-      hasDescriptions: !!(
-        args.worldDiff.playerDescriptions ||
-        args.worldDiff.agentDescriptions ||
-        args.worldDiff.worldMap
-      ),
-    });
+    // Every ~1s; only log/persist when slow (these block the isolate pool).
+    await logAndPersistMutation(
+      ctx,
+      'aiTown.game.saveWorld',
+      started,
+      {
+        worldId: String(args.worldId),
+        applyMs,
+        saveDiffMs: Date.now() - diffStarted,
+        players: args.worldDiff.world.players.length,
+        agents: args.worldDiff.world.agents.length,
+        agentOps: args.worldDiff.agentOperations.length,
+        hasDescriptions: !!(
+          args.worldDiff.playerDescriptions ||
+          args.worldDiff.agentDescriptions ||
+          args.worldDiff.worldMap
+        ),
+      },
+      { always: false },
+    );
   },
 });

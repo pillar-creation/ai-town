@@ -12,24 +12,27 @@ export const listMessages = query({
   handler: async (ctx, args) => {
     const messages = await ctx.db
       .query('messages')
-      .withIndex('conversationId', (q) => q.eq('worldId', args.worldId).eq('conversationId', args.conversationId))
+      .withIndex('conversationId', (q) =>
+        q.eq('worldId', args.worldId).eq('conversationId', args.conversationId),
+      )
       .collect();
-    const out = [];
-    for (const message of messages) {
+
+    // One pass for names — avoid N+1 playerDescription lookups.
+    const descriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    const names = new Map(descriptions.map((d) => [d.playerId, d.name]));
+
+    return messages.map((message) => {
       if (message.author === HUMAN_CHAT_AUTHOR_ID || message.author.startsWith('hc:')) {
-        out.push({ ...message, authorName: DEFAULT_NAME });
-        continue;
+        return { ...message, authorName: DEFAULT_NAME };
       }
-      const playerDescription = await ctx.db
-        .query('playerDescriptions')
-        .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', message.author))
-        .first();
-      if (!playerDescription) {
-        throw new Error(`Invalid author ID: ${message.author}`);
-      }
-      out.push({ ...message, authorName: playerDescription.name });
-    }
-    return out;
+      return {
+        ...message,
+        authorName: names.get(message.author) ?? message.author,
+      };
+    });
   },
 });
 

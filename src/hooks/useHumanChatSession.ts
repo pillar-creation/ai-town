@@ -5,6 +5,7 @@ import { Id } from '../../convex/_generated/dataModel';
 import { HUMAN_CHAT_AUTHOR_ID, DEFAULT_NAME } from '../../convex/constants';
 import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from './serverGame';
+import { reportMetric } from '../utils/metrics.ts';
 
 export type LocalChatMessage = {
   messageUuid: string;
@@ -80,8 +81,10 @@ export function useHumanChatSession(args: {
   const persistMessage = useMutation(api.humanChat.persistMessage);
 
   const [localChat, setLocalChat] = useState<LocalHumanChat | null>(null);
+  const [npcTyping, setNpcTyping] = useState(false);
   const localChatRef = useRef(localChat);
   localChatRef.current = localChat;
+  const greetingStartedRef = useRef(new Set<string>());
 
   // One-shot cache: loaded when a chat opens, not via reactive useQuery
   // (failed/timeout queries throw during render and crash PlayerDetails).
@@ -149,11 +152,17 @@ export function useHumanChatSession(args: {
             humanHistorySummaries: remote.humanHistorySummaries ?? [],
           };
           promptContextRef.current = prompt;
+          const promptMs = Math.round(performance.now() - started);
           console.log(
-            `[timing] ui.promptContext.once: ${Math.round(performance.now() - started)}ms ` +
+            `[timing] ui.promptContext.once: ${promptMs}ms ` +
               `npc=${prompt.npcName} agentHist=${prompt.agentHistorySummaries.length} ` +
               `humanHist=${prompt.humanHistorySummaries.length}`,
           );
+          reportMetric('ui.promptContext.once', promptMs, {
+            npc: prompt.npcName,
+            agentHist: prompt.agentHistorySummaries.length,
+            humanHist: prompt.humanHistorySummaries.length,
+          });
           return prompt;
         })
         .catch((err) => {
@@ -231,28 +240,105 @@ export function useHumanChatSession(args: {
     });
   }, [remoteMessages]);
 
+  const requestNpcOpening = useCallback(
+    async (chat: LocalHumanChat) => {
+      if (chat.messages.length > 0) return;
+      // Dedupe by NPC — conversationId can change when startChat adopts a server id.
+      if (greetingStartedRef.current.has(chat.playerId)) return;
+      greetingStartedRef.current.add(chat.playerId);
+
+      setNpcTyping(true);
+      const started = performance.now();
+      try {
+        const prompt = await resolveNpcPrompt(chat.playerId);
+        const response = await fetch(`${chatApiBase()}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: chat.conversationId,
+            mode: 'greet',
+            npcName: prompt.npcName,
+            identity: prompt.identity,
+            description: prompt.description,
+            plan: prompt.plan,
+            agentHistorySummaries: prompt.agentHistorySummaries,
+            humanHistorySummaries: prompt.humanHistorySummaries,
+            humanName: DEFAULT_NAME,
+            history: [],
+          }),
+        });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          throw new Error(detail?.error ?? `聊天服务错误 ${response.status}`);
+        }
+        const data = (await response.json()) as { reply: string; ms?: number };
+        console.log(
+          `[timing] ui.openChat.npcGreeting: ${Math.round(performance.now() - started)}ms ` +
+            `(server=${data.ms ?? '?'}ms npc=${prompt.npcName})`,
+        );
+
+        // Apply to the current chat with this NPC even if conversationId was adopted.
+        const current = localChatRef.current;
+        if (!current || current.playerId !== chat.playerId) return;
+        if (current.messages.length > 0) return;
+
+        const replyUuid = crypto.randomUUID();
+        const replyMsg: LocalChatMessage = {
+          messageUuid: replyUuid,
+          author: chat.playerId,
+          authorName: prompt.npcName,
+          text: data.reply || '……',
+          _creationTime: Date.now(),
+        };
+        setLocalChat((prev) =>
+          prev && prev.playerId === chat.playerId
+            ? { ...prev, messages: [...prev.messages, replyMsg] }
+            : prev,
+        );
+
+        void persistWithRetry(persistMessage, () => ({
+          worldId,
+          conversationId: localChatRef.current?.conversationId ?? chat.conversationId,
+          author: chat.playerId,
+          text: replyMsg.text,
+          messageUuid: replyUuid,
+        }));
+      } catch (err) {
+        greetingStartedRef.current.delete(chat.playerId);
+        console.warn('[timing] ui.openChat.npcGreeting failed', err);
+      } finally {
+        setNpcTyping(false);
+      }
+    },
+    [persistMessage, resolveNpcPrompt, worldId],
+  );
+
   const openChat = useCallback(
     (playerId: GameId<'players'>) => {
       const existing = localChatRef.current;
       if (existing && existing.playerId === playerId) {
         console.log(`[timing] ui.openChat.reuseLocal conversationId=${existing.conversationId}`);
         prefetchPromptContext(playerId);
+        // Still ensure NPC opens if this chat never got a first line.
+        if (existing.messages.length === 0) {
+          void requestNpcOpening(existing);
+        }
         return existing;
       }
 
       if (promptContextRef.current?.playerId !== playerId) {
         clearPromptCache();
       }
+      greetingStartedRef.current.delete(playerId);
 
-      const conversationId =
-        remoteActive?.playerId === playerId
-          ? remoteActive.conversationId
-          : newConversationId();
+      // Always start a fresh local conversation so NPC can speak first.
+      // startChat(forceNew) ends empty/stale active rows for this NPC.
+      const conversationId = newConversationId();
       const next: LocalHumanChat = {
         conversationId,
         playerId,
         humanPlayerId: HUMAN_CHAT_AUTHOR_ID,
-        messages: existing?.conversationId === conversationId ? existing.messages : [],
+        messages: [],
       };
       setLocalChat(next);
       prefetchPromptContext(playerId);
@@ -260,13 +346,11 @@ export function useHumanChatSession(args: {
         `[timing] ui.openChat.localReady conversationId=${conversationId} target=${playerId}`,
       );
 
-      // Fire-and-forget persistence — never blocks the UI.
-      // If Convex already has an active chat for this NPC, adopt its conversationId
-      // so async persistMessage writes land on the same row.
       void startChat({
         worldId,
         playerId,
         conversationId,
+        forceNew: true,
       })
         .then((result) => {
           if (!result?.conversationId) return;
@@ -283,13 +367,21 @@ export function useHumanChatSession(args: {
           console.warn('[timing] ui.openChat.persistStart failed', err);
         });
 
+      // NPC speaks the first line — never auto-send a human "hi".
+      void requestNpcOpening(next);
+
       return next;
     },
-    [clearPromptCache, prefetchPromptContext, remoteActive, startChat, worldId],
+    [clearPromptCache, prefetchPromptContext, requestNpcOpening, startChat, worldId],
   );
 
   const endChat = useCallback(() => {
+    const playerId = localChatRef.current?.playerId;
+    if (playerId) {
+      greetingStartedRef.current.delete(playerId);
+    }
     setLocalChat(null);
+    setNpcTyping(false);
     clearPromptCache();
     void endChatMutation({ worldId }).catch((err) => {
       console.warn('[timing] ui.endChat.persist failed', err);
@@ -366,10 +458,15 @@ export function useHumanChatSession(args: {
         throw new Error(detail?.error ?? `聊天服务错误 ${response.status}`);
       }
       const data = (await response.json()) as { reply: string; ms?: number };
+      const chatServerMs = Math.round(performance.now() - started);
       console.log(
-        `[timing] ui.sendMessage.chatServer: ${Math.round(performance.now() - started)}ms ` +
+        `[timing] ui.sendMessage.chatServer: ${chatServerMs}ms ` +
           `(server=${data.ms ?? '?'}ms)`,
       );
+      reportMetric('ui.sendMessage.chatServer', chatServerMs, {
+        serverMs: data.ms ?? null,
+        npc: prompt.npcName,
+      });
 
       const replyUuid = crypto.randomUUID();
       const replyMsg: LocalChatMessage = {
@@ -403,5 +500,6 @@ export function useHumanChatSession(args: {
     openChat,
     endChat,
     sendMessage,
+    npcTyping,
   };
 }

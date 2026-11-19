@@ -2,6 +2,8 @@
 
 默认走自托管 Convex 和本机 Ollama，不需要 Convex 云账号或 OpenAI。
 
+本机架构与耗时图（总览 + NPC 路径拆解）：[ARCHITECTURE.local.md](./ARCHITECTURE.local.md)
+
 ## 前置
 
 - **WSL2**（Docker Desktop 依赖它）。管理员 PowerShell：`wsl --install -d Ubuntu`，装完重启。
@@ -67,6 +69,12 @@ npm run dev:chat
 **http://localhost:5173/ai-town**
 
 （Vite `base` 是 `/ai-town`，不要只开根路径。）
+
+本机监控页（服务存活 + 耗时曲线，仅开发用）：
+
+**http://localhost:5173/ai-town/monitor**
+
+依赖 `dev:chat`（:8791）做 `/status` 探测与 metrics 环缓冲；Convex 侧关键 action/mutation 耗时写入 `monitorEvents`。
 
 Dashboard：http://localhost:6791（用 admin key 登录）
 

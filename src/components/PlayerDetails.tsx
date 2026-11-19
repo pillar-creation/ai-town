@@ -118,6 +118,7 @@ export default function PlayerDetails({
     openChat,
     endChat,
     sendMessage,
+    npcTyping,
   } = useHumanChatSession({ worldId, game });
 
   const actionHistory = useQuery(
@@ -364,21 +365,21 @@ export default function PlayerDetails({
                     {protagonistName} 的动作回顾
                   </h2>
                 </div>
-                {actionHistory.agent && (
+                {(protagonistAgentDescription || protagonistAgent?.inProgressOperation) && (
                   <div className="bg-brown-200 text-black p-3 leading-tight space-y-2">
                     <p>
                       <span className="font-bold">Agent 身份：</span>
-                      {actionHistory.agent.identity || '尚未设定'}
+                      {protagonistAgentDescription?.identity || '尚未设定'}
                     </p>
                     <p>
                       <span className="font-bold">当前计划：</span>
-                      {actionHistory.agent.plan || '暂无长期目标'}
+                      {protagonistAgentDescription?.plan || '暂无长期目标'}
                     </p>
-                    {actionHistory.agent.inProgressOperation && (
+                    {protagonistAgent?.inProgressOperation && (
                       <p>
                         <span className="font-bold">正在执行：</span>
-                        {OPERATION_LABELS[actionHistory.agent.inProgressOperation.name] ??
-                          actionHistory.agent.inProgressOperation.name}
+                        {OPERATION_LABELS[protagonistAgent.inProgressOperation.name] ??
+                          protagonistAgent.inProgressOperation.name}
                       </p>
                     )}
                   </div>
@@ -487,7 +488,8 @@ export default function PlayerDetails({
             humanPlayerId={localHumanChat.humanPlayerId}
             humanName={DEFAULT_NAME}
             npcTypingName={playerDescription?.name}
-            canSend={true}
+            isTyping={npcTyping}
+            canSend={!npcTyping}
             messages={localHumanChat.messages}
             onSend={sendMessage}
           />

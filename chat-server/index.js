@@ -1,4 +1,5 @@
 import express from 'express';
+import { listEvents, probeServices, pushEvent, summarizeEvents } from './metrics.js';
 
 const PORT = Number(process.env.CHAT_SERVER_PORT ?? 8791);
 const OLLAMA_HOST = (process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
@@ -14,12 +15,57 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, model: OLLAMA_MODEL, ollama: OLLAMA_HOST });
 });
 
+/** Local-dev metrics ingest (frontend / Convex actions). */
+app.post('/metrics', (req, res) => {
+  const body = req.body ?? {};
+  const batch = Array.isArray(body.events) ? body.events : [body];
+  const accepted = [];
+  for (const raw of batch) {
+    if (!raw || typeof raw.label !== 'string') continue;
+    accepted.push(
+      pushEvent({
+        source: typeof raw.source === 'string' ? raw.source : 'frontend',
+        label: raw.label,
+        ms: Number(raw.ms) || 0,
+        at: typeof raw.at === 'number' ? raw.at : undefined,
+        extra: raw.extra && typeof raw.extra === 'object' ? raw.extra : undefined,
+      }),
+    );
+  }
+  res.json({ ok: true, accepted: accepted.length });
+});
+
+app.get('/metrics', (req, res) => {
+  const sinceId = Number(req.query.sinceId ?? 0) || 0;
+  const limit = Number(req.query.limit ?? 400) || 400;
+  res.json({
+    ok: true,
+    events: listEvents({ sinceId, limit }),
+    summary: summarizeEvents(),
+  });
+});
+
+app.get('/status', async (_req, res) => {
+  try {
+    const snapshot = await probeServices();
+    res.json({
+      ok: true,
+      ...snapshot,
+      chat: { model: OLLAMA_MODEL, ollama: OLLAMA_HOST },
+      summary: summarizeEvents(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message ?? 'status probe failed' });
+  }
+});
+
 /**
  * POST /chat
  * body: {
  *   conversationId, npcName, identity?, description?, plan?,
  *   agentHistorySummaries?: string[], humanHistorySummaries?: string[],
- *   humanName, history: [{ author: 'human'|'npc', text }], text
+ *   humanName, history: [{ author: 'human'|'npc', text }], text?,
+ *   mode?: 'chat' | 'greet'   // greet = NPC speaks first, no human message
  * }
  */
 app.post('/chat', async (req, res) => {
@@ -36,10 +82,12 @@ app.post('/chat', async (req, res) => {
       humanName = 'Me',
       history = [],
       text,
+      mode = 'chat',
     } = req.body ?? {};
 
+    const isGreet = mode === 'greet';
     const trimmed = typeof text === 'string' ? text.trim() : '';
-    if (!trimmed) {
+    if (!isGreet && !trimmed) {
       res.status(400).json({ error: '消息不能为空' });
       return;
     }
@@ -92,23 +140,36 @@ app.post('/chat', async (req, res) => {
       prompt.push(`- 暂无相关摘要；这可能是你们第一次深入交流。`);
     }
 
-    prompt.push(
-      `${humanName} 是前来和你聊天的人；请结合角色自身特性，以及与其他角色、与 ${humanName} 的历史摘要自然回应。`,
-    );
+    if (isGreet) {
+      prompt.push(
+        `${humanName} 刚点开和你聊天，对方还没有说话。必须由你先开口说第一句话。`,
+        `结合人设自然打招呼或主动引出话题；不要假设对方已经说了 hi/你好。`,
+        `只说一句简短开场白，不要替 ${humanName} 说话，不要用英文，不要说自己是 AI。`,
+      );
+    } else {
+      prompt.push(
+        `${humanName} 是前来和你聊天的人；请结合角色自身特性，以及与其他角色、与 ${humanName} 的历史摘要自然回应。`,
+      );
+    }
 
-    const messages = [
-      { role: 'system', content: prompt.join('\n') },
-      ...history.map((m) => {
-        const authorName = m.author === 'npc' ? npcName : humanName;
-        const recipientName = m.author === 'npc' ? humanName : npcName;
-        return {
-          role: 'user',
-          content: `${authorName} to ${recipientName}: ${m.text}`,
-        };
-      }),
-      { role: 'user', content: `${humanName} to ${npcName}: ${trimmed}` },
-      { role: 'user', content: `${npcName} to ${humanName}:` },
-    ];
+    const messages = isGreet
+      ? [
+          { role: 'system', content: prompt.join('\n') },
+          { role: 'user', content: `${npcName} to ${humanName}:` },
+        ]
+      : [
+          { role: 'system', content: prompt.join('\n') },
+          ...history.map((m) => {
+            const authorName = m.author === 'npc' ? npcName : humanName;
+            const recipientName = m.author === 'npc' ? humanName : npcName;
+            return {
+              role: 'user',
+              content: `${authorName} to ${recipientName}: ${m.text}`,
+            };
+          }),
+          { role: 'user', content: `${humanName} to ${npcName}: ${trimmed}` },
+          { role: 'user', content: `${npcName} to ${humanName}:` },
+        ];
 
     const llmStart = Date.now();
     const reply = await ollamaChat({
@@ -126,14 +187,39 @@ app.post('/chat', async (req, res) => {
       cleaned = '……';
     }
 
+    const totalMs = Date.now() - started;
     console.log(
-      `[timing] chat-server.chat: total=${Date.now() - started}ms llm=${llmMs}ms ` +
+      `[timing] chat-server.chat: total=${totalMs}ms llm=${llmMs}ms mode=${mode} ` +
         `conversationId=${conversationId ?? '-'} npc=${npcName} ` +
         `agentHist=${agentSummaries.length} humanHist=${humanSummaries.length}`,
     );
-    res.json({ reply: cleaned, ms: Date.now() - started, llmMs });
+    pushEvent({
+      source: 'chat-server',
+      label: 'chat-server.chat',
+      ms: totalMs,
+      extra: {
+        llmMs,
+        conversationId: conversationId ?? null,
+        npc: npcName,
+        agentHist: agentSummaries.length,
+        humanHist: humanSummaries.length,
+      },
+    });
+    pushEvent({
+      source: 'chat-server',
+      label: 'chat-server.llm',
+      ms: llmMs,
+      extra: { npc: npcName },
+    });
+    res.json({ reply: cleaned, ms: totalMs, llmMs });
   } catch (err) {
     console.error('[chat-server] /chat failed', err);
+    pushEvent({
+      source: 'chat-server',
+      label: 'chat-server.chat.error',
+      ms: Date.now() - started,
+      extra: { error: err?.message ?? '聊天服务失败' },
+    });
     res.status(500).json({
       error: err?.message ?? '聊天服务失败',
     });

@@ -114,20 +114,27 @@ export class Agent {
       // previous doSomething finishes without an invitee (that spam was
       // flooding the isolate pool and stalling movement simulation).
       this.lastInviteAttempt = now;
-      this.startOperation(game, now, 'agentDoSomething', {
-        worldId: game.worldId,
-        player: player.serialize(),
-        otherFreePlayers: [...game.world.players.values()]
-          .filter((p) => p.id !== player.id)
-          // Humans chat out-of-band; never invite them into world conversations.
-          .filter((p) => !p.human)
-          .filter(
-            (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
-          )
-          .map((p) => p.serialize()),
-        agent: this.serialize(),
-        map: game.worldMap.serialize(),
-      });
+      // Self-hosted Convex only has a few action isolates. Five agents firing
+      // agentDoSomething together starves runStep and freezes the whole town.
+      const inviteScansInFlight = [...game.world.agents.values()].filter(
+        (a) => a.inProgressOperation?.name === 'agentDoSomething',
+      ).length;
+      if (inviteScansInFlight === 0 && Math.random() < 0.2) {
+        this.startOperation(game, now, 'agentDoSomething', {
+          worldId: game.worldId,
+          player: player.serialize(),
+          otherFreePlayers: [...game.world.players.values()]
+            .filter((p) => p.id !== player.id)
+            // Humans chat out-of-band; never invite them into world conversations.
+            .filter((p) => !p.human)
+            .filter(
+              (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
+            )
+            .map((p) => p.serialize()),
+          agent: this.serialize(),
+          map: game.worldMap.serialize(),
+        });
+      }
       return;
     }
     // Check to see if we have a conversation we need to remember.

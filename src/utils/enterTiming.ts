@@ -1,3 +1,5 @@
+import { reportMetric } from './metrics.ts';
+
 type MarkPayload = Record<string, string | number | boolean | null | undefined>;
 
 const PREFIX = '[enter-timing]';
@@ -15,6 +17,7 @@ export function beginEnterTiming(reason: string) {
   console.log(
     `${PREFIX} #${sessionId} START (${reason}) — open DevTools console to follow phase timings`,
   );
+  reportMetric('enter.start', 0, { reason, sessionId });
   return sessionId;
 }
 
@@ -28,6 +31,12 @@ export function markEnterTiming(label: string, payload?: MarkPayload) {
   console.log(
     `${PREFIX} #${sessionId} +${sinceStart.toFixed(0)}ms (Δ${sinceLast.toFixed(0)}ms) ${label}${extra}`,
   );
+  reportMetric('enter.mark', sinceLast, {
+    label,
+    sinceStart: Math.round(sinceStart),
+    sessionId,
+    ...payload,
+  });
 }
 
 export function endEnterTiming(label: string, payload?: MarkPayload) {
@@ -35,6 +44,7 @@ export function endEnterTiming(label: string, payload?: MarkPayload) {
   markEnterTiming(label, payload);
   const total = performance.now() - startedAt;
   console.log(`${PREFIX} #${sessionId} DONE total=${total.toFixed(0)}ms`);
+  reportMetric('enter.total', total, { label, sessionId, ...payload });
   active = false;
 }
 

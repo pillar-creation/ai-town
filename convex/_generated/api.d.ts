@@ -36,6 +36,7 @@ import type * as engine_historicalObject from "../engine/historicalObject.js";
 import type * as humanChat from "../humanChat.js";
 import type * as init from "../init.js";
 import type * as messages from "../messages.js";
+import type * as monitor from "../monitor.js";
 import type * as testing from "../testing.js";
 import type * as util_FastIntegerCompression from "../util/FastIntegerCompression.js";
 import type * as util_assertNever from "../util/assertNever.js";
@@ -87,6 +88,7 @@ declare const fullApi: ApiFromModules<{
   humanChat: typeof humanChat;
   init: typeof init;
   messages: typeof messages;
+  monitor: typeof monitor;
   testing: typeof testing;
   "util/FastIntegerCompression": typeof util_FastIntegerCompression;
   "util/assertNever": typeof util_assertNever;

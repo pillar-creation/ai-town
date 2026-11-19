@@ -14,6 +14,7 @@ import { ACTIVITIES, ACTIVITY_COOLDOWN, CONVERSATION_COOLDOWN } from '../constan
 import { api, internal } from '../_generated/api';
 import { sleep } from '../util/sleep';
 import { serializedPlayer } from './player';
+import { logAndPersistAction } from '../monitor';
 import { logTiming } from '../util/timing';
 
 export const agentRememberConversation = internalAction({
@@ -44,7 +45,7 @@ export const agentRememberConversation = internalAction({
         operationId: args.operationId,
       },
     });
-    logTiming('agentRememberConversation', started, {
+    await logAndPersistAction(ctx, 'agentRememberConversation', started, {
       rememberMs,
       sendMs: Date.now() - sendStarted,
       agentId: args.agentId,
@@ -99,10 +100,18 @@ export const agentGenerateMessage = internalAction({
       leaveConversation: args.type === 'leave',
       operationId: args.operationId,
     });
+    const sendMs = Date.now() - sendStart;
+    const totalMs = Date.now() - totalStart;
     console.log(
       `[timing] agentGenerateMessage type=${args.type} generate=${generateMs}ms ` +
-        `send=${Date.now() - sendStart}ms total=${Date.now() - totalStart}ms`,
+        `send=${sendMs}ms total=${totalMs}ms`,
     );
+    await logAndPersistAction(ctx, 'agentGenerateMessage', totalStart, {
+      type: args.type,
+      generateMs,
+      sendMs,
+      totalMs,
+    });
   },
 });
 
@@ -132,7 +141,6 @@ export const agentDoSomething = internalAction({
     if (!player.pathfinding) {
       if (recentActivity || justLeftConversation) {
         kind = 'wander';
-        await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
           name: 'finishDoSomething',
@@ -142,13 +150,11 @@ export const agentDoSomething = internalAction({
             destination: wanderDestination(map),
           },
         });
-        logTiming('agentDoSomething', started, { kind, agentId: agent.id });
         return;
       } else {
         // TODO: have LLM choose the activity & emoji
         kind = 'activity';
         const activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
-        await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
           name: 'finishDoSomething',
@@ -162,7 +168,6 @@ export const agentDoSomething = internalAction({
             },
           },
         });
-        logTiming('agentDoSomething', started, { kind, agentId: agent.id });
         return;
       }
     }
@@ -176,9 +181,6 @@ export const agentDoSomething = internalAction({
             otherFreePlayers: args.otherFreePlayers,
           });
 
-    // TODO: We hit a lot of OCC errors on sending inputs in this file. It's
-    // easy for them to get scheduled at the same time and line up in time.
-    await sleep(Math.random() * 1000);
     await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: args.worldId,
       name: 'finishDoSomething',
@@ -188,6 +190,7 @@ export const agentDoSomething = internalAction({
         invitee,
       },
     });
+    // Console only — persisting another mutation here fought runStep for isolates.
     logTiming('agentDoSomething', started, {
       kind,
       agentId: agent.id,
