@@ -10,7 +10,7 @@ import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from '../hooks/serverGame';
 import { Player } from '../../convex/aiTown/player';
 import { toast } from 'react-toastify';
-import { DEFAULT_NAME } from '../../convex/constants';
+import { useAuthSession, useHumanToken } from '../auth';
 import { useHumanChatSession } from '../hooks/useHumanChatSession';
 
 type PlayerPanel = 'plan' | 'history' | 'chat';
@@ -97,9 +97,13 @@ export default function PlayerDetails({
   setSelectedElement: SelectElement;
   scrollViewRef: React.RefObject<HTMLDivElement>;
 }) {
-  // Auth disabled: same constant as world.userStatus, without a timeout-prone query.
+  const { token: humanToken } = useHumanToken(worldId);
+  const { session, isAuthenticated } = useAuthSession();
   const players = [...game.world.players.values()];
-  const humanPlayer = players.find((p) => p.human === DEFAULT_NAME);
+  const humanPlayer = players.find((p) => humanToken != null && p.human === humanToken);
+  const humanDisplayName = isAuthenticated
+    ? (session?.name ?? session?.email?.split('@')[0] ?? '访客')
+    : '游客';
 
   const [panel, setPanel] = useState<PlayerPanel | null>(null);
 
@@ -274,7 +278,7 @@ export default function PlayerDetails({
         <div className="box w-3/4 sm:w-full mr-auto">
           <h2 className="bg-brown-700 p-2 font-display text-2xl sm:text-4xl tracking-wider shadow-solid text-center">
             {panel === 'plan'
-              ? '主角计划'
+              ? `${protagonistName}计划`
               : panel === 'history'
                 ? protagonistName
                 : playerDescription?.name}
@@ -338,7 +342,7 @@ export default function PlayerDetails({
         )}
         {panel === 'plan' && (
           <div className="box min-h-[12rem]">
-            <h2 className="bg-brown-700 text-base sm:text-lg text-center">主角计划</h2>
+            <h2 className="bg-brown-700 text-base sm:text-lg text-center">{protagonistName}计划</h2>
             <div className="bg-brown-200 text-black p-3 text-base sm:text-sm leading-tight">
               <p className="mb-3 font-bold tracking-wide">
                 {protagonistName}接下来的计划
@@ -486,7 +490,7 @@ export default function PlayerDetails({
         {panel === 'chat' && showingChatMessages && localHumanChat && (
           <Messages
             humanPlayerId={localHumanChat.humanPlayerId}
-            humanName={DEFAULT_NAME}
+            humanName={humanDisplayName}
             npcTypingName={playerDescription?.name}
             isTyping={npcTyping}
             canSend={!npcTyping}
@@ -513,7 +517,7 @@ export default function PlayerDetails({
           }}
         >
           <div className="h-full bg-clay-700 text-center whitespace-nowrap">
-            <span>主角计划</span>
+            <span>{protagonistName}计划</span>
           </div>
         </button>
         <button

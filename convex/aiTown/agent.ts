@@ -24,7 +24,8 @@ import { distance } from '../util/geometry';
 import { internal } from '../_generated/api';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
-import { WorldMap } from './worldMap';
+import { homeForCharacterName } from '../../data/characters';
+import { wanderDestination } from '../util/movement';
 
 // Simple wander/activity must not wait on the action isolate pool. Self-hosted
 // Convex has a handful of workers; LLM message/remember actions starve
@@ -92,7 +93,11 @@ export class Agent {
         player.activity !== undefined && now < player.activity.until + ACTIVITY_COOLDOWN;
       // Prefer walking: only occasionally stand still for a short activity.
       if (recentActivity || justLeftConversation || Math.random() < 0.75) {
-        movePlayer(game, now, player, wanderDestination(game.worldMap));
+        const playerDescription = game.playerDescriptions.get(player.id);
+        const home = playerDescription
+          ? homeForCharacterName(playerDescription.name)
+          : undefined;
+        movePlayer(game, now, player, wanderDestination(game.worldMap, home));
       } else {
         const activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
         player.activity = {
@@ -334,13 +339,6 @@ export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
 type AgentOperations = typeof internal.aiTown.agentOperations;
 
-function wanderDestination(worldMap: WorldMap) {
-  return {
-    x: 1 + Math.floor(Math.random() * (worldMap.width - 2)),
-    y: 1 + Math.floor(Math.random() * (worldMap.height - 2)),
-  };
-}
-
 export async function runAgentOperation(ctx: MutationCtx, operation: string, args: any) {
   let reference;
   switch (operation) {
@@ -385,6 +383,19 @@ export const agentSendMessage = internalMutation({
       leaveConversation: args.leaveConversation,
       operationId: args.operationId,
     });
+  },
+});
+
+export const playerDescriptionById = internalQuery({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .unique();
   },
 });
 

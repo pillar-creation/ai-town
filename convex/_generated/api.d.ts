@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as ResendOTP from "../ResendOTP.js";
 import type * as agent_conversation from "../agent/conversation.js";
 import type * as agent_embeddingsCache from "../agent/embeddingsCache.js";
 import type * as agent_memory from "../agent/memory.js";
@@ -29,10 +30,13 @@ import type * as aiTown_player from "../aiTown/player.js";
 import type * as aiTown_playerDescription from "../aiTown/playerDescription.js";
 import type * as aiTown_world from "../aiTown/world.js";
 import type * as aiTown_worldMap from "../aiTown/worldMap.js";
+import type * as appUsers from "../appUsers.js";
+import type * as auth from "../auth.js";
 import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as engine_abstractGame from "../engine/abstractGame.js";
 import type * as engine_historicalObject from "../engine/historicalObject.js";
+import type * as http from "../http.js";
 import type * as humanChat from "../humanChat.js";
 import type * as init from "../init.js";
 import type * as messages from "../messages.js";
@@ -43,9 +47,11 @@ import type * as util_assertNever from "../util/assertNever.js";
 import type * as util_asyncMap from "../util/asyncMap.js";
 import type * as util_compression from "../util/compression.js";
 import type * as util_geometry from "../util/geometry.js";
+import type * as util_identity from "../util/identity.js";
 import type * as util_isSimpleObject from "../util/isSimpleObject.js";
 import type * as util_llm from "../util/llm.js";
 import type * as util_minheap from "../util/minheap.js";
+import type * as util_movement from "../util/movement.js";
 import type * as util_object from "../util/object.js";
 import type * as util_sleep from "../util/sleep.js";
 import type * as util_timing from "../util/timing.js";
@@ -60,6 +66,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  ResendOTP: typeof ResendOTP;
   "agent/conversation": typeof agent_conversation;
   "agent/embeddingsCache": typeof agent_embeddingsCache;
   "agent/memory": typeof agent_memory;
@@ -81,10 +88,13 @@ declare const fullApi: ApiFromModules<{
   "aiTown/playerDescription": typeof aiTown_playerDescription;
   "aiTown/world": typeof aiTown_world;
   "aiTown/worldMap": typeof aiTown_worldMap;
+  appUsers: typeof appUsers;
+  auth: typeof auth;
   constants: typeof constants;
   crons: typeof crons;
   "engine/abstractGame": typeof engine_abstractGame;
   "engine/historicalObject": typeof engine_historicalObject;
+  http: typeof http;
   humanChat: typeof humanChat;
   init: typeof init;
   messages: typeof messages;
@@ -95,9 +105,11 @@ declare const fullApi: ApiFromModules<{
   "util/asyncMap": typeof util_asyncMap;
   "util/compression": typeof util_compression;
   "util/geometry": typeof util_geometry;
+  "util/identity": typeof util_identity;
   "util/isSimpleObject": typeof util_isSimpleObject;
   "util/llm": typeof util_llm;
   "util/minheap": typeof util_minheap;
+  "util/movement": typeof util_movement;
   "util/object": typeof util_object;
   "util/sleep": typeof util_sleep;
   "util/timing": typeof util_timing;

@@ -32,7 +32,7 @@ above) are written in Python.
 ## Stack
 
 - Game engine, database, and vector search: [Convex](https://convex.dev/)
-- Auth (Optional): [Clerk](https://clerk.com/)
+- Auth: [Convex Auth](https://labs.convex.dev/auth) + [Resend](https://resend.com/) (email OTP / magic link)
 - Default chat model is `llama3` and embeddings with `mxbai-embed-large`.
 - Local inference: [Ollama](https://github.com/jmorganca/ollama)
 - Configurable for other cloud LLMs: [Together.ai](https://together.ai/) or anything that speaks the
@@ -432,29 +432,31 @@ To transfer your local data to the cloud, you can run `npx convex export` and th
 If you have existing data you want to clear, you can run
 `npx convex run testing:wipeAllTables --prod`
 
-### Adding Auth (Optional)
+### Auth (Convex Auth v1 + Resend)
 
-You can add clerk auth back in with `git revert b44a436`. Or just look at that diff for what changed
-to remove it.
+Email OTP and magic link sign-in live in `src/auth/` (LaunchScreen left panel). Guests can enter
+the town without signing in; verified visitors get a persistent `tokenIdentifier`.
 
-**Make a Clerk account**
+Uses `@convex-dev/auth@0.0.98` (v1 API with Auth.js email providers). Convex Auth 2.x is a
+different stack and is not used here.
 
-- Go to https://dashboard.clerk.com/ and click on "Add Application"
-- Name your application and select the sign-in providers you would like to offer users
-- Create Application
-- Add `VITE_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` to `.env.local`
+**One-time Convex env setup** (backend must be running):
 
 ```bash
-VITE_CLERK_PUBLISHABLE_KEY=pk_***
-CLERK_SECRET_KEY=sk_***
+npx convex env set SITE_URL http://localhost:5173/ai-town
+npx convex env set AUTH_RESEND_KEY re_xxxxxxxx
+# optional sender (Resend sandbox default works for your signup email):
+# npx convex env set AUTH_EMAIL "伊甸园 <onboarding@resend.dev>"
+
+# JWT signing keys:
+node scripts/generateAuthKeys.mjs
+# paste JWT_PRIVATE_KEY and JWKS into the Convex dashboard env, or:
+# npx convex env set JWT_PRIVATE_KEY "..."
+# npx convex env set JWKS "..."
 ```
 
-- Go to JWT Templates and create a new Convex Template.
-- Copy the JWKS endpoint URL for use below.
-
-```sh
-npx convex env set CLERK_ISSUER_URL # e.g. https://your-issuer-url.clerk.accounts.dev/
-```
+Also keep `VITE_CONVEX_SITE_URL` (HTTP actions, default `http://127.0.0.1:3211`) in `.env.local`.
+Then run `npx convex dev` once so `authTables` / `http` routes and `api.appUsers` codegen land.
 
 ### Deploy the frontend to Vercel
 

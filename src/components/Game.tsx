@@ -12,6 +12,7 @@ import { DebugTimeManager } from './DebugTimeManager.tsx';
 import { GameId } from '../../convex/aiTown/ids.ts';
 import { useServerGame } from '../hooks/serverGame.ts';
 import { markEnterTiming } from '../utils/enterTiming.ts';
+import { useHumanToken } from '../auth';
 
 export const SHOW_DEBUG_UI = !!import.meta.env.VITE_SHOW_DEBUG_UI;
 
@@ -42,6 +43,9 @@ export default function Game() {
   const worldStatus = useQuery(api.world.defaultWorldStatus);
   const worldId = worldStatus?.worldId;
   const engineId = worldStatus?.engineId;
+  // Must resolve outside <Stage>: @pixi/react's reconciler does not inherit Convex Auth context,
+  // and useQuery errors inside PixiGame unmount the whole Pixi tree (blank sky-blue canvas).
+  const { token: humanToken } = useHumanToken(worldId);
 
   useEffect(() => {
     if (!worldStatus || worldStatusReady.current) return;
@@ -118,6 +122,7 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
                       height={stageHeight}
                       historicalTime={historicalTime}
                       setSelectedElement={setSelectedElement}
+                      humanToken={humanToken}
                     />
                   </ConvexProvider>
                 </Stage>

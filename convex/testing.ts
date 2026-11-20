@@ -10,6 +10,8 @@ import { fetchEmbedding } from './util/llm';
 import { chatCompletion } from './util/llm';
 import { startConversationMessage } from './agent/conversation';
 import { GameId } from './aiTown/ids';
+import * as map from '../data/gentle';
+import { Descriptions } from '../data/characters';
 
 // Clear all of the tables except for the embeddings cache.
 const excludedTables: Array<TableNames> = ['embeddingsCache'];
@@ -100,11 +102,11 @@ export const debugCreatePlayers = internalMutation({
 export const randomPositions = internalMutation({
   handler: async (ctx) => {
     const { worldStatus } = await getDefaultWorld(ctx.db);
-    const map = await ctx.db
+    const worldMap = await ctx.db
       .query('maps')
       .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
       .unique();
-    if (!map) {
+    if (!worldMap) {
       throw new Error(`No map for world ${worldStatus.worldId}`);
     }
     const world = await ctx.db.get(worldStatus.worldId);
@@ -115,11 +117,131 @@ export const randomPositions = internalMutation({
       await insertInput(ctx, world._id, 'moveTo', {
         playerId: player.id,
         destination: {
-          x: 1 + Math.floor(Math.random() * (map.width - 2)),
-          y: 1 + Math.floor(Math.random() * (map.height - 2)),
+          x: 1 + Math.floor(Math.random() * (worldMap.width - 2)),
+          y: 1 + Math.floor(Math.random() * (worldMap.height - 2)),
         },
       });
     }
+  },
+});
+
+/** Create any Descriptions entries not yet present as agents in the default world. */
+export const ensureDescribedAgents = internalMutation({
+  handler: async (ctx) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const playerDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const existingNames = new Set(playerDescriptions.map((p) => p.name));
+    const created: string[] = [];
+    for (let i = 0; i < Descriptions.length; i++) {
+      const description = Descriptions[i];
+      if (existingNames.has(description.name)) {
+        continue;
+      }
+      await insertInput(ctx, worldStatus.worldId, 'createAgent', {
+        descriptionIndex: i,
+      });
+      created.push(description.name);
+    }
+    return { created, alreadyPresent: [...existingNames] };
+  },
+});
+
+/** Refresh identity/plan from data/characters.ts and optionally teleport home. */
+export const syncAgentPersonas = internalMutation({
+  handler: async (ctx) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const world = await ctx.db.get(worldStatus.worldId);
+    if (!world) {
+      throw new Error(`No world ${worldStatus.worldId}`);
+    }
+    const playerDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+    const agentDescriptions = await ctx.db
+      .query('agentDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .collect();
+
+    const updated: string[] = [];
+    const teleported: Array<{ name: string; x: number; y: number }> = [];
+    const players = world.players.map((p) => ({ ...p }));
+
+    for (const description of Descriptions) {
+      const playerDesc = playerDescriptions.find((p) => p.name === description.name);
+      if (!playerDesc) continue;
+
+      await ctx.db.patch(playerDesc._id, {
+        description: description.identity,
+      });
+
+      const agent = world.agents.find((a) => a.playerId === playerDesc.playerId);
+      if (agent) {
+        const agentDesc = agentDescriptions.find((a) => a.agentId === agent.id);
+        if (agentDesc) {
+          await ctx.db.patch(agentDesc._id, {
+            identity: description.identity,
+            plan: description.plan,
+          });
+        }
+      }
+
+      if ('home' in description && description.home) {
+        const idx = players.findIndex((p) => p.id === playerDesc.playerId);
+        if (idx >= 0) {
+          const { x, y } = description.home;
+          players[idx] = {
+            ...players[idx],
+            position: { x, y },
+            pathfinding: undefined,
+            speed: 0,
+          };
+          teleported.push({ name: description.name, x, y });
+        }
+      }
+      updated.push(description.name);
+    }
+
+    if (teleported.length > 0) {
+      await ctx.db.patch(world._id, {
+        players,
+        historicalLocations: [],
+      });
+    }
+
+    await kickEngine(ctx, worldStatus.worldId);
+    return { updated, teleported };
+  },
+});
+
+/** Replace the default world's map document with current data/gentle.js (keeps agents). */
+export const reloadMap = internalMutation({
+  handler: async (ctx) => {
+    const { worldStatus } = await getDefaultWorld(ctx.db);
+    const existing = await ctx.db
+      .query('maps')
+      .withIndex('worldId', (q) => q.eq('worldId', worldStatus.worldId))
+      .unique();
+    const payload = {
+      width: map.mapwidth,
+      height: map.mapheight,
+      tileSetUrl: map.tilesetpath,
+      tileSetDimX: map.tilesetpxw,
+      tileSetDimY: map.tilesetpxh,
+      tileDim: map.tiledim,
+      bgTiles: map.bgtiles,
+      objectTiles: map.objmap,
+      animatedSprites: map.animatedsprites,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, payload);
+      return { updated: existing._id, size: `${payload.width}x${payload.height}`, sprites: payload.animatedSprites.length };
+    }
+    const id = await ctx.db.insert('maps', { worldId: worldStatus.worldId, ...payload });
+    return { inserted: id, size: `${payload.width}x${payload.height}`, sprites: payload.animatedSprites.length };
   },
 });
 

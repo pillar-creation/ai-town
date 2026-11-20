@@ -13,6 +13,7 @@ import {
 import { playerId } from './aiTown/ids';
 import { kickEngine, startEngine, stopEngine } from './aiTown/main';
 import { engineInsertInput } from './engine/abstractGame';
+import { resolveHumanToken } from './util/identity';
 import { logTiming, logTimingSlowOnly } from './util/timing';
 
 export const defaultWorldStatus = query({
@@ -202,36 +203,38 @@ export const restartDeadWorlds = internalMutation({
 export const userStatus = query({
   args: {
     worldId: v.id('worlds'),
+    guestId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // const identity = await ctx.auth.getUserIdentity();
-    // if (!identity) {
-    //   return null;
-    // }
-    // return identity.tokenIdentifier;
-    return DEFAULT_NAME;
+    const human = await resolveHumanToken(ctx, args.guestId);
+    return human?.tokenIdentifier ?? null;
   },
 });
 
 export const joinWorld = mutation({
   args: {
     worldId: v.id('worlds'),
+    guestId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const name = DEFAULT_NAME;
+    const human = await resolveHumanToken(ctx, args.guestId);
+    if (!human) {
+      throw new ConvexError('需要游客身份或登录后才能加入小镇');
+    }
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new ConvexError(`Invalid world ID: ${args.worldId}`);
     }
-    const existingPlayer = world.players.find((p) => p.human === DEFAULT_NAME);
+    const existingPlayer = world.players.find((p) => p.human === human.tokenIdentifier);
     if (existingPlayer) {
       return null;
     }
+    const label = human.kind === 'guest' ? '游客' : human.name;
     return await insertInput(ctx, world._id, 'join', {
-      name,
+      name: label,
       character: characters[Math.floor(Math.random() * characters.length)].name,
-      description: `${DEFAULT_NAME} 是前来小镇闲逛、想和大家聊天的访客。`,
-      tokenIdentifier: DEFAULT_NAME,
+      description: `${label} 是前来小镇闲逛、想和大家聊天的访客。`,
+      tokenIdentifier: human.tokenIdentifier,
     });
   },
 });
@@ -239,13 +242,18 @@ export const joinWorld = mutation({
 export const leaveWorld = mutation({
   args: {
     worldId: v.id('worlds'),
+    guestId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const human = await resolveHumanToken(ctx, args.guestId);
+    if (!human) {
+      return;
+    }
     const world = await ctx.db.get(args.worldId);
     if (!world) {
       throw new Error(`Invalid world ID: ${args.worldId}`);
     }
-    const existingPlayer = world.players.find((p) => p.human === DEFAULT_NAME);
+    const existingPlayer = world.players.find((p) => p.human === human.tokenIdentifier);
     if (!existingPlayer) {
       return;
     }
@@ -262,10 +270,7 @@ export const sendWorldInput = mutation({
     args: v.any(),
   },
   handler: async (ctx, args) => {
-    // const identity = await ctx.auth.getUserIdentity();
-    // if (!identity) {
-    //   throw new Error(`Not logged in`);
-    // }
+    // Guests and signed-in users may send inputs; engine validates player ownership.
     return await engineInsertInput(ctx, args.engineId, args.name as any, args.args);
   },
 });

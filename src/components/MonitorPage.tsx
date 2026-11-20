@@ -12,7 +12,19 @@ import {
 const POLL_MS = 2000;
 const CHART_WINDOW_SEC = 10 * 60;
 const STAT_WINDOW_MS = 5 * 60 * 1000;
-const SERIES_COLORS = ['#5ec8ff', '#fec742', '#7dcea0', '#e07a5f', '#c39bd3', '#76d7c4'];
+const SERIES_COLORS = [
+  '#5ec8ff',
+  '#fec742',
+  '#7dcea0',
+  '#e07a5f',
+  '#c39bd3',
+  '#76d7c4',
+  '#f1948a',
+  '#85c1e9',
+  '#f7dc6f',
+  '#a9dfbf',
+  '#d7bde2',
+];
 
 type ChartPoint = {
   at: number;
@@ -101,21 +113,116 @@ function mergeEvents(
   return points;
 }
 
-function topLabels(points: ChartPoint[], limit = 5): string[] {
-  const cutoff = Date.now() - CHART_WINDOW_SEC * 1000;
-  const counts = new Map<string, number>();
+function parseExtra(extra: ChartPoint['extra']): Record<string, unknown> | null {
+  if (!extra) return null;
+  if (typeof extra === 'object') return extra as Record<string, unknown>;
+  try {
+    return JSON.parse(extra) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Fixed chart series aligned with RuntimeMap modules (not top-by-frequency). */
+type ModuleSeries = {
+  key: string;
+  title: string;
+  samples: (points: ChartPoint[], cutoff: number) => Array<{ at: number; ms: number }>;
+};
+
+function samplesByLabel(
+  labels: string | string[],
+  points: ChartPoint[],
+  cutoff: number,
+): Array<{ at: number; ms: number }> {
+  const set = new Set(Array.isArray(labels) ? labels : [labels]);
+  const out: Array<{ at: number; ms: number }> = [];
   for (const p of points) {
     if (p.at < cutoff) continue;
-    if (p.source === 'probe') continue;
-    if (p.label.startsWith('enter.mark')) continue;
-    const key = `${p.source}:${p.label}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!set.has(p.label)) continue;
+    out.push({ at: p.at, ms: p.ms });
   }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([k]) => k);
+  return out;
 }
+
+function samplesByExtraField(
+  label: string,
+  field: string,
+  points: ChartPoint[],
+  cutoff: number,
+): Array<{ at: number; ms: number }> {
+  const out: Array<{ at: number; ms: number }> = [];
+  for (const p of points) {
+    if (p.at < cutoff) continue;
+    if (p.label !== label) continue;
+    const ex = parseExtra(p.extra);
+    const v = ex?.[field];
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out.push({ at: p.at, ms: v });
+    }
+  }
+  return out;
+}
+
+const MODULE_SERIES: ModuleSeries[] = [
+  {
+    key: 'enter.total',
+    title: 'Browser',
+    samples: (pts, cut) => samplesByLabel('enter.total', pts, cut),
+  },
+  {
+    key: 'humanChat.startChat',
+    title: 'startChat',
+    samples: (pts, cut) => samplesByLabel('humanChat.startChat', pts, cut),
+  },
+  {
+    key: 'ui.promptContext.once',
+    title: 'promptContext',
+    samples: (pts, cut) => samplesByLabel('ui.promptContext.once', pts, cut),
+  },
+  {
+    key: 'runStep',
+    title: 'runStep',
+    samples: (pts, cut) => samplesByLabel(['aiTown.main.runStep', 'runStep'], pts, cut),
+  },
+  {
+    key: 'agentDoSomething',
+    title: 'doSomething',
+    samples: (pts, cut) => samplesByLabel('agentDoSomething', pts, cut),
+  },
+  {
+    key: 'agentGenerateMessage',
+    title: 'generateMessage',
+    samples: (pts, cut) => samplesByLabel('agentGenerateMessage', pts, cut),
+  },
+  {
+    key: 'generateMs',
+    title: 'generateMs',
+    samples: (pts, cut) => samplesByExtraField('agentGenerateMessage', 'generateMs', pts, cut),
+  },
+  {
+    key: 'sendMs',
+    title: 'sendMs',
+    samples: (pts, cut) => samplesByExtraField('agentGenerateMessage', 'sendMs', pts, cut),
+  },
+  {
+    key: 'agentRemember',
+    title: 'remember',
+    samples: (pts, cut) =>
+      samplesByLabel(['agentRememberConversation', 'agentRemember'], pts, cut),
+  },
+  {
+    key: 'chat-server.chat',
+    title: 'chat-server',
+    samples: (pts, cut) =>
+      samplesByLabel(['chat-server.chat', 'ui.sendMessage.chatServer'], pts, cut),
+  },
+  {
+    key: 'chat-server.llm',
+    title: 'Ollama chat',
+    samples: (pts, cut) => samplesByLabel('chat-server.llm', pts, cut),
+  },
+];
 
 function aggregate(
   points: ChartPoint[],
@@ -134,16 +241,6 @@ function aggregate(
     n: rows.length,
     at: last.at,
   };
-}
-
-function parseExtra(extra: ChartPoint['extra']): Record<string, unknown> | null {
-  if (!extra) return null;
-  if (typeof extra === 'object') return extra as Record<string, unknown>;
-  try {
-    return JSON.parse(extra) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }
 
 function aggregateExtraField(
@@ -471,22 +568,25 @@ function RuntimeMap({
 function LatencyChart({ points }: { points: ChartPoint[] }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const plotRef = useRef<uPlot | null>(null);
-  const seriesKeys = useMemo(() => topLabels(points), [points]);
+  const hasSamples = useMemo(() => {
+    const cutoff = Date.now() - CHART_WINDOW_SEC * 1000;
+    return MODULE_SERIES.some((s) => s.samples(points, cutoff).length > 0);
+  }, [points]);
 
   useLayoutEffect(() => {
     if (!hostRef.current) return;
     const width = Math.max(hostRef.current.clientWidth, 320);
     const opts: Options = {
       width,
-      height: 260,
+      height: 280,
       series: [
         {},
-        ...seriesKeys.map((key, i) => ({
-          label: key,
+        ...MODULE_SERIES.map((s, i) => ({
+          label: s.title,
           stroke: SERIES_COLORS[i % SERIES_COLORS.length],
           width: 2,
           spanGaps: true,
-          points: { show: false },
+          points: { show: true, size: 3 },
         })),
       ],
       axes: [
@@ -499,69 +599,68 @@ function LatencyChart({ points }: { points: ChartPoint[] }) {
               return `${d.getHours().toString().padStart(2, '0')}:${d
                 .getMinutes()
                 .toString()
-                .padStart(2, '0')}:${d.getSeconds().toString()
-                .padStart(2, '0')}`;
+                .padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
             }),
         },
         {
           stroke: '#cfcfcf',
           grid: { stroke: 'rgba(255,255,255,0.08)' },
           size: 50,
+          values: (_u, splits) =>
+            splits.map((v) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}s` : `${Math.round(v)}`)),
         },
       ],
       scales: {
         x: { time: false },
-        y: { range: (_u, min, max) => [0, Math.max(max * 1.15, 50)] },
+        y: { range: (_u, _min, max) => [0, Math.max(max * 1.15, 50)] },
       },
       legend: { show: true },
     };
     plotRef.current?.destroy();
-    plotRef.current = new uPlot(opts, [[], ...seriesKeys.map(() => [])], hostRef.current);
+    plotRef.current = new uPlot(opts, [[], ...MODULE_SERIES.map(() => [])], hostRef.current);
     return () => {
       plotRef.current?.destroy();
       plotRef.current = null;
     };
-  }, [seriesKeys]);
+  }, []);
 
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot) return;
     const cutoff = Date.now() - CHART_WINDOW_SEC * 1000;
-    const xs: number[] = [];
-    const ys: number[][] = seriesKeys.map(() => []);
-    const buckets = new Map<number, Map<string, number>>();
+    const perSeries = MODULE_SERIES.map((s) => s.samples(points, cutoff));
+    const buckets = new Map<number, Map<number, number>>();
 
-    for (const p of points) {
-      if (p.at < cutoff) continue;
-      const key = `${p.source}:${p.label}`;
-      const idx = seriesKeys.indexOf(key);
-      if (idx < 0) continue;
-      const tSec = Math.floor(p.at / 1000);
-      if (!buckets.has(tSec)) buckets.set(tSec, new Map());
-      buckets.get(tSec)!.set(key, p.ms);
-    }
+    perSeries.forEach((samples, seriesIdx) => {
+      for (const sample of samples) {
+        const tSec = Math.floor(sample.at / 1000);
+        if (!buckets.has(tSec)) buckets.set(tSec, new Map());
+        buckets.get(tSec)!.set(seriesIdx, sample.ms);
+      }
+    });
 
     const times = [...buckets.keys()].sort((a, b) => a - b);
+    const xs: number[] = [];
+    const ys: number[][] = MODULE_SERIES.map(() => []);
     for (const t of times) {
       xs.push(t);
       const bag = buckets.get(t)!;
-      seriesKeys.forEach((key, i) => {
-        ys[i].push(bag.has(key) ? bag.get(key)! : NaN);
+      MODULE_SERIES.forEach((_, i) => {
+        ys[i].push(bag.has(i) ? bag.get(i)! : NaN);
       });
     }
 
-    const data: AlignedData = [xs, ...ys];
-    plot.setData(data, true);
+    plot.setData([xs, ...ys] as AlignedData, true);
     const nowSec = Date.now() / 1000;
     plot.setScale('x', { min: nowSec - CHART_WINDOW_SEC, max: nowSec });
-  }, [points, seriesKeys]);
+  }, [points]);
 
   useEffect(() => {
     const onResize = () => {
       if (!plotRef.current || !hostRef.current) return;
       plotRef.current.setSize({
         width: Math.max(hostRef.current.clientWidth, 320),
-        height: 260,
+        height: 280,
       });
     };
     window.addEventListener('resize', onResize);
@@ -571,9 +670,9 @@ function LatencyChart({ points }: { points: ChartPoint[] }) {
   return (
     <div className="w-full overflow-hidden rounded-md border border-white/10 bg-black/30 p-2">
       <div ref={hostRef} className="w-full" />
-      {seriesKeys.length === 0 && (
+      {!hasSamples && (
         <p className="px-2 py-6 text-center text-sm text-white/50">
-          暂无耗时样本。进入小镇、发消息或等待 NPC 行动后会出现曲线。
+          暂无模块耗时样本。进入小镇、发消息或等待 NPC 行动后，上方 Runtime 各模块会出现曲线。
         </p>
       )}
     </div>
@@ -657,7 +756,7 @@ export default function MonitorPage() {
               local only
             </p>
             <h1 className="font-display text-4xl tracking-wide text-[#fec742] sm:text-5xl">
-              AI Town Monitor
+              伊甸园 Monitor
             </h1>
             <p className="mt-2 max-w-2xl font-body text-sm text-white/70">
               Runtime 耗时结构 + 曲线。数据来自 chat-server 环缓冲与 Convex monitorEvents。
@@ -688,7 +787,11 @@ export default function MonitorPage() {
         <RuntimeMap points={points} status={status} />
 
         <section>
-          <h2 className="mb-3 font-display text-2xl text-white/90">Latency (10 min)</h2>
+          <h2 className="mb-3 font-display text-2xl text-white/90">模块耗时 (10 min)</h2>
+          <p className="mb-2 font-body text-xs text-white/45">
+            与上方 Runtime 模块对齐：Browser / startChat / promptContext / runStep / doSomething /
+            generateMessage / generateMs / sendMs / remember / chat-server / Ollama chat
+          </p>
           <LatencyChart points={points} />
         </section>
 

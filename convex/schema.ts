@@ -1,3 +1,4 @@
+import { authTables } from '@convex-dev/auth/server';
 import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
 import { agentTables } from './agent/schema';
@@ -6,6 +7,21 @@ import { conversationId, playerId } from './aiTown/ids';
 import { engineTables } from './engine/schema';
 
 export default defineSchema({
+  ...authTables,
+
+  // Business profile for verified visitors (maps Convex Auth users).
+  appUsers: defineTable({
+    authUserId: v.id('users'),
+    email: v.string(),
+    emailVerified: v.boolean(),
+    displayName: v.optional(v.string()),
+    role: v.literal('visitor'),
+    createdAt: v.number(),
+    lastSeenAt: v.optional(v.number()),
+  })
+    .index('by_authUserId', ['authUserId'])
+    .index('by_email', ['email']),
+
   messages: defineTable({
     conversationId,
     messageUuid: v.string(),

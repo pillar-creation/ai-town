@@ -1,0 +1,27 @@
+{
+  "frames": {
+    "pixels_large1.png": {
+      "frame": { "x": 0, "y": 0, "w": 208, "h": 208 },
+      "rotated": false,
+      "trimmed": true,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 208, "h": 208 },
+      "sourceSize": { "w": 208, "h": 208 }
+    },
+    "pixels_large2.png": {
+      "frame": { "x": 208, "y": 0, "w": 208, "h": 208 },
+      "rotated": false,
+      "trimmed": true,
+      "spriteSourceSize": { "x": 0, "y": 0, "w": 208, "h": 208 },
+      "sourceSize": { "w": 208, "h": 208 }
+    }
+  },
+  "animations": {
+    "pixels_large": ["pixels_large1.png", "pixels_large2.png"]
+  },
+  "meta": {
+    "image": "./spritesheets/temple.png",
+    "format": "RGBA8888",
+    "size": { "w": 416, "h": 208 },
+    "scale": "1"
+  }
+}

@@ -13,7 +13,6 @@ import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
 import { endEnterTiming, markEnterTiming } from '../utils/enterTiming.ts';
-import { DEFAULT_NAME } from '../../convex/constants.ts';
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -23,15 +22,15 @@ export const PixiGame = (props: {
   width: number;
   height: number;
   setSelectedElement: SelectElement;
+  /** Resolved outside Stage — Convex auth/query hooks break inside @pixi/react's reconciler. */
+  humanToken: string | null;
 }) => {
   // PIXI setup.
   const pixiApp = useApp();
   const viewportRef = useRef<Viewport | undefined>();
 
-  // Auth is disabled; userStatus is a constant. Avoid a Convex round-trip that can
-  // time out under backend load and crash React (useQuery throws on server errors).
   const humanPlayerId = [...props.game.world.players.values()].find(
-    (p) => p.human === DEFAULT_NAME,
+    (p) => props.humanToken != null && p.human === props.humanToken,
   )?.id;
 
   const moveTo = useSendInput(props.engineId, 'moveTo');

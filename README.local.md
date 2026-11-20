@@ -43,6 +43,7 @@ docker compose exec backend ./generate_admin_key.sh
 CONVEX_SELF_HOSTED_ADMIN_KEY="<admin-key>"
 CONVEX_SELF_HOSTED_URL="http://127.0.0.1:3210"
 VITE_CONVEX_URL="http://127.0.0.1:3210"
+VITE_CONVEX_SITE_URL="http://127.0.0.1:3211"
 ```
 
 然后：
@@ -50,9 +51,18 @@ VITE_CONVEX_URL="http://127.0.0.1:3210"
 ```powershell
 npx convex env set OLLAMA_HOST http://host.docker.internal:11434
 npx convex env set OLLAMA_MODEL qwen2.5
+
+# Auth（邮箱 OTP + Magic Link，需 Resend API key）
+npx convex env set SITE_URL http://localhost:5173/ai-town
+npx convex env set AUTH_RESEND_KEY re_xxxxxxxx
+node scripts/generateAuthKeys.mjs
+# 把输出的 JWT_PRIVATE_KEY / JWKS 分别 `npx convex env set ...`
+
 npm run predev
 npm run dev
 ```
+
+首页左侧可邮箱注册/登录；不登录也能点星球进镇（游客）。详情见 README「Auth」小节。
 
 `npm run dev` 会并行跑 Convex 同步、本机 Vite，以及人机聊天服务（`dev:chat` → `:8791`）。
 

@@ -6,6 +6,9 @@ import * as gentlesparkle from '../../data/animations/gentlesparkle.json';
 import * as gentlewaterfall from '../../data/animations/gentlewaterfall.json';
 import * as gentlesplash from '../../data/animations/gentlesplash.json';
 import * as windmill from '../../data/animations/windmill.json';
+import * as temple from '../../data/animations/temple.json';
+import * as church from '../../data/animations/church.json';
+import * as university from '../../data/animations/university.json';
 import { markEnterTiming } from '../utils/enterTiming.ts';
 
 const animations = {
@@ -19,6 +22,12 @@ const animations = {
     url: '/ai-town/assets/spritesheets/gentlewaterfall32.png',
   },
   'windmill.json': { spritesheet: windmill, url: '/ai-town/assets/spritesheets/windmill.png' },
+  'temple.json': { spritesheet: temple, url: '/ai-town/assets/spritesheets/temple.png' },
+  'church.json': { spritesheet: church, url: '/ai-town/assets/spritesheets/church.png' },
+  'university.json': {
+    spritesheet: university,
+    url: '/ai-town/assets/spritesheets/university.png',
+  },
   'gentlesplash.json': { spritesheet: gentlesplash,
     url: '/ai-town/assets/spritesheets/gentlewaterfall32.png',},
 };

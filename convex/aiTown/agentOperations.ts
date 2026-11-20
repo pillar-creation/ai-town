@@ -16,6 +16,8 @@ import { sleep } from '../util/sleep';
 import { serializedPlayer } from './player';
 import { logAndPersistAction } from '../monitor';
 import { logTiming } from '../util/timing';
+import { homeForCharacterName } from '../../data/characters';
+import { wanderDestination } from '../util/movement';
 
 export const agentRememberConversation = internalAction({
   args: {
@@ -141,13 +143,20 @@ export const agentDoSomething = internalAction({
     if (!player.pathfinding) {
       if (recentActivity || justLeftConversation) {
         kind = 'wander';
+        const playerDescription = await ctx.runQuery(internal.aiTown.agent.playerDescriptionById, {
+          worldId: args.worldId,
+          playerId: player.id,
+        });
+        const home = playerDescription
+          ? homeForCharacterName(playerDescription.name)
+          : undefined;
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
           name: 'finishDoSomething',
           args: {
             operationId: args.operationId,
             agentId: agent.id,
-            destination: wanderDestination(map),
+            destination: wanderDestination(map, home),
           },
         });
         return;
@@ -199,10 +208,3 @@ export const agentDoSomething = internalAction({
   },
 });
 
-function wanderDestination(worldMap: WorldMap) {
-  // Wander someonewhere at least one tile away from the edge.
-  return {
-    x: 1 + Math.floor(Math.random() * (worldMap.width - 2)),
-    y: 1 + Math.floor(Math.random() * (worldMap.height - 2)),
-  };
-}
